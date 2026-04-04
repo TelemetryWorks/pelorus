@@ -1,0 +1,74 @@
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a2e', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a9eff', 'lineColor': '#4a9eff', 'secondaryColor': '#16213e', 'tertiaryColor': '#0f3460', 'noteTextColor': '#e0e0e0', 'noteBkgColor': '#1a1a2e', 'noteBorderColor': '#4a9eff' }}}%%
+
+graph TB
+    subgraph INGEST["<b>Data Ingest Layer</b> (Rust)"]
+        SRC["Vehicle Data Source<br/><i>UDP / file replay / CAN bus</i>"]
+        PARSE["Message Parser<br/><i>serde / custom decoders</i>"]
+        NORM["Normalizer<br/><i>→ (ts, id, lon, lat, …)</i>"]
+    end
+
+    subgraph STORE["<b>Storage Layer</b> (Rust + Arrow)"]
+        RING["Arrow RecordBatch<br/>Ring Buffer<br/><i>hot window · ~60s</i>"]
+        CHUNK["Temporal Chunk<br/>Manager<br/><i>partitioned intervals</i>"]
+        H3IDX["H3 Spatial Index<br/><i>viewport culling</i>"]
+        VORTEX["Vortex Compressed<br/>Store<br/><i>warm/cold · hours+</i>"]
+        DFUSION["DataFusion<br/><i>optional · SQL over<br/>historical chunks</i>"]
+    end
+
+    subgraph SERVE["<b>Transport Layer</b> (Rust · Axum)"]
+        WS["WebSocket Server<br/><i>per-client session</i>"]
+        VIEWQ["Viewport + Time<br/>Query Resolver"]
+        IPC["Arrow IPC<br/>Serializer"]
+    end
+
+    subgraph BROWSER["<b>Browser Client</b> (minimal deps)"]
+        WSCLI["WebSocket Client<br/><i>vanilla TypeScript</i>"]
+        DECODE["Arrow IPC Decoder<br/><i>arrow-rs → WASM<br/>OR apache-arrow JS</i>"]
+        GPUBUF["GPU Buffer<br/>Manager<br/><i>typed arrays →<br/>WebGL2 buffers</i>"]
+        RENDER["Map Renderer<br/><i>WebGL2 direct<br/>OR MapLibre GL JS</i>"]
+        TSLIDER["Time Slider<br/><i>shader uniform update<br/>no re-upload</i>"]
+        VPORT["Viewport Manager<br/><i>pan/zoom → server query</i>"]
+    end
+
+    SRC --> PARSE --> NORM
+    NORM --> RING
+    RING --> CHUNK
+    CHUNK --> H3IDX
+    CHUNK --> VORTEX
+    VORTEX -.-> DFUSION
+
+    CHUNK --> VIEWQ
+    H3IDX --> VIEWQ
+    VORTEX --> VIEWQ
+    VIEWQ --> IPC --> WS
+
+    WS <-->|"Arrow IPC<br/>frames"| WSCLI
+    WSCLI --> DECODE
+    DECODE --> GPUBUF
+    GPUBUF --> RENDER
+
+    TSLIDER -->|"uniform<br/>update<br/>(no reupload)"| RENDER
+    VPORT -->|"bbox + time<br/>range query"| WSCLI
+
+    style INGEST fill:#1a1a2e,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
+    style STORE fill:#0f3460,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
+    style SERVE fill:#16213e,stroke:#4a9eff,stroke-width:2px,color:#e0e0e0
+    style BROWSER fill:#1a1a2e,stroke:#e94560,stroke-width:2px,color:#e0e0e0
+
+    style SRC fill:#1a1a2e,stroke:#4a9eff,color:#e0e0e0
+    style PARSE fill:#1a1a2e,stroke:#4a9eff,color:#e0e0e0
+    style NORM fill:#1a1a2e,stroke:#4a9eff,color:#e0e0e0
+    style RING fill:#0f3460,stroke:#4a9eff,color:#e0e0e0
+    style CHUNK fill:#0f3460,stroke:#4a9eff,color:#e0e0e0
+    style H3IDX fill:#0f3460,stroke:#4a9eff,color:#e0e0e0
+    style VORTEX fill:#0f3460,stroke:#e94560,color:#e0e0e0
+    style DFUSION fill:#0f3460,stroke:#666,stroke-dasharray:5 5,color:#999
+    style WS fill:#16213e,stroke:#4a9eff,color:#e0e0e0
+    style VIEWQ fill:#16213e,stroke:#4a9eff,color:#e0e0e0
+    style IPC fill:#16213e,stroke:#4a9eff,color:#e0e0e0
+    style WSCLI fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
+    style DECODE fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
+    style GPUBUF fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
+    style RENDER fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
+    style TSLIDER fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
+    style VPORT fill:#1a1a2e,stroke:#e94560,color:#e0e0e0
