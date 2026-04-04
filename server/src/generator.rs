@@ -162,7 +162,6 @@ mod tests {
 
         let lon1 = b1.column(2).as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(0);
         let lon2 = b2.column(2).as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(0);
-        // With speed > 0, position should change
         assert_ne!(lon1, lon2);
     }
 }

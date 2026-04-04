@@ -1,14 +1,17 @@
 {
   "name": "pelorus-client",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "scripts": {
     "build": "esbuild src/main.ts --bundle --outfile=dist/app.js --sourcemap --target=es2022 --format=esm",
     "watch": "esbuild src/main.ts --bundle --outfile=dist/app.js --sourcemap --target=es2022 --format=esm --watch",
     "clean": "rm -rf dist/*.js dist/*.map"
   },
   "dependencies": {
-    "apache-arrow": "^18.0.0"
+    "@deck.gl/core": "^9.1.0",
+    "@deck.gl/layers": "^9.1.0",
+    "apache-arrow": "^18.0.0",
+    "deck.gl": "^9.1.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.0"
