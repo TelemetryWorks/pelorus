@@ -47,8 +47,7 @@ updateThemeButton();
 themeBtn.addEventListener("click", () => {
   toggleTheme();
   updateThemeButton();
-  // Re-render with new theme colors
-  map.update();
+  map.invalidate();
 });
 
 function updateThemeButton(): void {

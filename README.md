@@ -2,12 +2,13 @@
 
 GPU-accelerated geospatial object tracker with Arrow IPC streaming and shader-side time filtering.
 
-**Current: Phase 3** — deck.gl rendering with full-rate data pipeline.
+**Current: Phase 4** — Natural Earth base map.
 
 ## Prerequisites
 
 - Rust 2024 edition (1.85+)
 - Node.js (for esbuild + npm deps — no runtime dependency)
+- `curl` (for geodata download)
 
 ## Quick Start
 
@@ -15,14 +16,15 @@ GPU-accelerated geospatial object tracker with Arrow IPC streaming and shader-si
 # one-time: install deps
 cd client && npm install && cd ..
 
-# make scripts executable
+# one-time: download Natural Earth geodata (public domain)
 chmod +x scripts/*.sh
+./scripts/download-geodata.sh
 
 # build + run (defaults: 2000 objects @ 10 Hz)
 ./scripts/dev.sh
 ```
 
-Open `http://127.0.0.1:3000` — colored dots moving across a dark globe.
+Open `http://127.0.0.1:3000` — colored dots moving over a vector world map.
 
 ## Configuration
 
@@ -66,13 +68,16 @@ PELORUS_OBJECTS=5000 PELORUS_HZ=10 ./scripts/dev.sh
 │   │   ├── decode.ts       # Arrow IPC decoder
 │   │   ├── buffer.ts       # Rolling position buffer (typed arrays)
 │   │   ├── map.ts          # deck.gl renderer (ScatterplotLayer)
+│   │   ├── basemap.ts      # Natural Earth GeoJSON loader + layers
 │   │   ├── perf.ts         # Real-time performance monitor
 │   │   └── theme.ts        # Dark/light theme manager
 │   └── dist/
-│       └── index.html      # served by Axum as static fallback
+│       ├── index.html      # served by Axum as static fallback
+│       └── data/           # Natural Earth GeoJSON (downloaded)
 └── scripts/
     ├── dev.sh              # build + run
-    └── watch.sh            # watch + run
+    ├── watch.sh            # watch + run
+    └── download-geodata.sh # fetch Natural Earth data
 ```
 
 ## Architecture
@@ -88,8 +93,9 @@ Rust server                          Browser client
 │  IPC Serializer  │                  │  Position Buffer        │
 └─────────────────┘                  │  (flat typed arrays)    │
                                      │         │               │
-                                     │  deck.gl ScatterplotLayer│
-                                     │  (binary attribute API) │
+                                     │  deck.gl Layers         │
+                                     │  ├─ GeoJsonLayer (base) │
+                                     │  └─ ScatterplotLayer    │
                                      └─────────────────────────┘
 ```
 
@@ -97,8 +103,8 @@ Rust server                          Browser client
 
 1. ~~Skeleton — WebSocket echo~~
 2. ~~Arrow IPC schema + mock data + browser decode~~
-3. **deck.gl ScatterplotLayer — moving dots** ← current
-4. Natural Earth base map
+3. ~~deck.gl ScatterplotLayer — moving dots~~
+4. **Natural Earth base map** ← current
 5. Time slider with GPU-side filtering
 6. Temporal chunk manager + ring buffer
 7. Viewport culling with H3

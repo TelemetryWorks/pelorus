@@ -3,6 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
+DATA_DIR="$ROOT/client/dist/data"
+
+# Check for geodata
+if [ ! -f "$DATA_DIR/ne_110m_admin_0_countries.geojson" ]; then
+  echo "⚠  No geodata found. Run: ./scripts/download-geodata.sh"
+  echo "   (base map will be blank until downloaded)"
+  echo ""
+fi
 
 echo "=== building client ==="
 cd "$ROOT/client"
