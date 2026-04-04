@@ -3,20 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Phase 1 — WebSocket Scaffold</title>
+  <title>Pelorus</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
-      --bg: #0a0a0f;
-      --surface: #12121a;
-      --border: #1e1e2e;
-      --text: #c8c8d4;
-      --text-dim: #5a5a6e;
-      --accent: #4a9eff;
-      --ok: #2ecc71;
-      --err: #e74c3c;
-      --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+      --bg:         #0a0a0f;
+      --surface:    #12121a;
+      --border:     #1e1e2e;
+      --text:       #c8c8d4;
+      --text-dim:   #5a5a6e;
+      --accent:     #4a9eff;
+      --ok:         #2ecc71;
+      --err:        #e74c3c;
+      --warn:       #f39c12;
+      --cat-alpha:  #4a9eff;
+      --cat-bravo:  #e94560;
+      --cat-charlie:#2ecc71;
+      --cat-delta:  #f39c12;
+      --font-mono:  'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace;
     }
 
     html, body {
@@ -25,30 +30,32 @@
       color: var(--text);
       font-family: var(--font-mono);
       font-size: 13px;
+      transition: background 0.2s, color 0.2s;
     }
 
     #app {
       display: flex;
       flex-direction: column;
       height: 100%;
-      padding: 16px;
-      gap: 12px;
+      padding: 12px;
+      gap: 8px;
     }
 
+    /* --- Header --- */
     header {
       display: flex;
       align-items: center;
       gap: 12px;
-      padding-bottom: 12px;
+      padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
     }
 
     header h1 {
       font-size: 14px;
       font-weight: 600;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
-      color: var(--text-dim);
+      color: var(--accent);
     }
 
     #status {
@@ -67,8 +74,48 @@
       transition: background 0.3s;
     }
 
-    #status.connected .dot { background: var(--ok); }
+    #status.connected .dot {
+      background: var(--ok);
+      box-shadow: 0 0 6px var(--ok);
+    }
 
+    .spacer { flex: 1; }
+
+    #theme-btn {
+      background: transparent;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    #theme-btn:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    /* --- Stats bar --- */
+    #stats {
+      display: flex;
+      gap: 16px;
+      padding: 6px 0;
+      font-size: 11px;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+      min-height: 24px;
+      flex-wrap: wrap;
+    }
+
+    #stats .stat b {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    /* --- Map container --- */
     #map-container {
       flex: 1;
       background: var(--surface);
@@ -80,43 +127,11 @@
       color: var(--text-dim);
       font-size: 12px;
       letter-spacing: 0.05em;
+      transition: background 0.2s, border-color 0.2s;
+      min-height: 200px;
     }
 
-    #controls {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-
-    #msg-input {
-      flex: 1;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 8px 12px;
-      color: var(--text);
-      font-family: var(--font-mono);
-      font-size: 13px;
-      outline: none;
-    }
-
-    #msg-input:focus { border-color: var(--accent); }
-
-    button {
-      background: var(--accent);
-      color: var(--bg);
-      border: none;
-      border-radius: 4px;
-      padding: 8px 16px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      letter-spacing: 0.05em;
-    }
-
-    button:hover { opacity: 0.85; }
-
+    /* --- Log --- */
     #log {
       height: 160px;
       overflow-y: auto;
@@ -127,6 +142,7 @@
       font-size: 11px;
       line-height: 1.6;
       color: var(--text-dim);
+      transition: background 0.2s, border-color 0.2s;
     }
 
     #log .entry { white-space: pre; }
@@ -134,25 +150,31 @@
     #log .entry.recv { color: var(--ok); }
     #log .entry.sys  { color: var(--text-dim); }
     #log .entry.err  { color: var(--err); }
+    #log .entry.data { color: var(--warn); }
+
+    /* scrollbar */
+    #log::-webkit-scrollbar { width: 6px; }
+    #log::-webkit-scrollbar-track { background: transparent; }
+    #log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    #log::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
   </style>
 </head>
 <body>
   <div id="app">
     <header>
-      <h1>Phase 1 — WebSocket</h1>
+      <h1>Pelorus</h1>
       <div id="status">
         <span class="dot"></span>
         <span class="label">disconnected</span>
       </div>
+      <div class="spacer"></div>
+      <button id="theme-btn" title="toggle theme">◐</button>
     </header>
 
-    <div id="map-container">
-      map canvas — phase 3
-    </div>
+    <div id="stats"></div>
 
-    <div id="controls">
-      <input id="msg-input" type="text" placeholder="type a message and press enter" />
-      <button id="send-btn">SEND</button>
+    <div id="map-container">
+      awaiting data stream
     </div>
 
     <div id="log"></div>

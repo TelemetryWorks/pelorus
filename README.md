@@ -1,9 +1,7 @@
 # Pelorus
 GPU-accelerated geospatial object tracker with Arrow IPC streaming and shader-side time filtering
 
-# Phase 1 — WebSocket Scaffold
-
-Axum WebSocket echo server + vanilla TypeScript browser client.
+**Current: Phase 2** — Arrow IPC streaming + browser decode.
 
 ## Prerequisites
 
@@ -39,11 +37,16 @@ Open `http://127.0.0.1:3000` — type a message, hit enter, see it echoed.
 ├── server/
 │   ├── Cargo.toml
 │   └── src/
-│       └── main.rs         # Axum + WebSocket server
+│       ├── main.rs         # Axum + WebSocket streaming server
+│       ├── schema.rs       # Arrow schema definition
+│       ├── generator.rs    # Mock data generator (synthetic objects)
+│       └── ipc.rs          # Arrow IPC serialization
 ├── client/
-│   ├── package.json        # esbuild only
+│   ├── package.json        # esbuild + apache-arrow
 │   ├── src/
-│   │   └── main.ts         # WebSocket client
+│   │   ├── main.ts         # Entry point, WebSocket + stats
+│   │   ├── decode.ts       # Arrow IPC decoder
+│   │   └── theme.ts        # Dark/light theme manager
 │   └── dist/
 │       └── index.html      # served by Axum as static fallback
 └── scripts/
