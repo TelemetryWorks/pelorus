@@ -2,14 +2,19 @@
 // Pelorus — Map renderer (deck.gl)
 // ---------------------------------------------------------------------------
 //
-// Renders tracked objects as a ScatterplotLayer on top of Natural Earth
-// base map layers. Uses deck.gl's binary attribute API for maximum
-// throughput — typed arrays go directly to WebGL.
+// Renders tracked objects with GPU-side time filtering via
+// DataFilterExtension. Uses RELATIVE timestamps (offset from buffer
+// minimum) to avoid Float32 precision loss in WebGL shaders.
+//
+// The full position buffer is uploaded to the GPU; the time slider
+// updates only a shader uniform — zero CPU work during scrubbing.
 // ---------------------------------------------------------------------------
 
 import { Deck, MapView } from "@deck.gl/core";
 import { ScatterplotLayer } from "@deck.gl/layers";
+import { DataFilterExtension } from "@deck.gl/extensions";
 import { BaseMap } from "./basemap";
+import { PositionBuffer } from "./buffer";
 import { getTheme } from "./theme";
 
 // Category colors — RGBA arrays for deck.gl
@@ -35,17 +40,6 @@ const LIGHT_CATEGORY_COLORS: [number, number, number, number][] = [
   [245, 158, 11, 200],
 ];
 
-/** Current frame of position data for live rendering */
-export interface CurrentFrame {
-  count: number;
-  longitudes: Float64Array;
-  latitudes: Float64Array;
-  altitudes: Float64Array;
-  speeds: Float64Array;
-  headings: Float64Array;
-  categories: Uint8Array;
-}
-
 export interface MapConfig {
   container: HTMLElement;
   initialLongitude?: number;
@@ -56,11 +50,28 @@ export interface MapConfig {
 export class MapRenderer {
   private deck: Deck;
   private basemap: BaseMap;
-  private _currentFrame: CurrentFrame | null = null;
+  private buffer: PositionBuffer | null = null;
+
   private _lastUpdateRows = 0;
-  private _renderVersion = 0;
+  private _dataVersion = 0;
+  private _filterVersion = 0;
   private _dirty = false;
+  private _filterDirty = false;
   private _basemapLoaded = false;
+
+  // Absolute filter range in microseconds (set by time slider)
+  private _filterMinAbs = -Infinity;
+  private _filterMaxAbs = Infinity;
+
+  // Epoch offset — subtracted from all timestamps for GPU precision
+  private _epochOffsetUs = 0;
+
+  // Cached attribute arrays — rebuilt only when _dataVersion changes
+  private _cachedPositions: Float64Array | null = null;
+  private _cachedColors: Uint8Array | null = null;
+  private _cachedRelTimestamps: Float32Array | null = null;  // relative, Float32-safe
+  private _cachedLength = 0;
+  private _cachedDataVersion = -1;
 
   constructor(config: MapConfig) {
     this.basemap = new BaseMap();
@@ -81,35 +92,54 @@ export class MapRenderer {
       },
     });
 
-    // Load base map asynchronously
     this.basemap.load().then(() => {
       this._basemapLoaded = true;
-      this._dirty = true; // trigger re-render with basemap
+      this._dirty = true;
     });
   }
 
-  /** Set the current frame of live data */
-  setCurrentFrame(frame: CurrentFrame): void {
-    this._currentFrame = frame;
+  setBuffer(buffer: PositionBuffer): void {
+    this.buffer = buffer;
+  }
+
+  /** Call when new data has been appended to the buffer */
+  markDataDirty(): void {
+    this._dataVersion++;
     this._dirty = true;
   }
 
   /**
-   * Update deck.gl layers if new data is available.
-   * Returns render time in ms (0 if nothing to do).
+   * Update the time filter range (absolute microseconds).
+   * Internally converted to relative timestamps for the GPU.
+   */
+  setFilterRange(minUs: number, maxUs: number): void {
+    this._filterMinAbs = minUs;
+    this._filterMaxAbs = maxUs;
+    this._filterVersion++;
+    this._filterDirty = true;
+  }
+
+  /** Force full re-render (e.g. theme change) */
+  invalidate(): void {
+    this._dirty = true;
+  }
+
+  /**
+   * Update deck.gl layers. Returns render time in ms.
    */
   update(): number {
-    if (!this._dirty) return 0;
-    this._dirty = false;
+    if (!this._dirty && !this._filterDirty) return 0;
 
     const t0 = performance.now();
     const isDark = getTheme() === "dark";
 
-    // Base map layers (underneath)
-    const baseLayers = this.basemap.getLayers();
+    // Rebuild cached attribute arrays if data changed
+    if (this.buffer && this._cachedDataVersion !== this._dataVersion) {
+      this._rebuildCache(isDark);
+    }
 
-    // Data layer (on top)
-    const dataLayers = this._buildDataLayers(isDark);
+    const baseLayers = this.basemap.getLayers();
+    const dataLayers = this._buildFilteredLayer(isDark);
 
     this.deck.setProps({
       layers: [...baseLayers, ...dataLayers],
@@ -118,22 +148,37 @@ export class MapRenderer {
       },
     });
 
+    this._dirty = false;
+    this._filterDirty = false;
+
     return performance.now() - t0;
   }
 
-  private _buildDataLayers(isDark: boolean): any[] {
-    if (!this._currentFrame) return [];
+  /**
+   * Rebuild cached attribute arrays from the buffer.
+   * Expensive — only on new data.
+   */
+  private _rebuildCache(isDark: boolean): void {
+    if (!this.buffer || this.buffer.length === 0) return;
 
-    const frame = this._currentFrame;
-    const n = frame.count;
+    const buf = this.buffer;
+    const n = buf.length;
     const palette = isDark ? CATEGORY_COLORS : LIGHT_CATEGORY_COLORS;
 
-    this._renderVersion++;
-    this._lastUpdateRows = n;
+    // Positions [lon, lat, alt] interleaved
+    const positions = new Float64Array(n * 3);
+    const lons = buf.longitudes;
+    const lats = buf.latitudes;
+    const alts = buf.altitudes;
+    for (let i = 0; i < n; i++) {
+      positions[i * 3] = lons[i];
+      positions[i * 3 + 1] = lats[i];
+      positions[i * 3 + 2] = alts[i];
+    }
 
-    // Build color array from category indices
+    // Colors
     const colors = new Uint8Array(n * 4);
-    const cats = frame.categories;
+    const cats = buf.categories;
     for (let i = 0; i < n; i++) {
       const c = palette[cats[i] % palette.length];
       const offset = i * 4;
@@ -143,16 +188,40 @@ export class MapRenderer {
       colors[offset + 3] = c[3];
     }
 
-    // Build interleaved position array [lon, lat, alt]
-    const positions = new Float64Array(n * 3);
-    const lons = frame.longitudes;
-    const lats = frame.latitudes;
-    const alts = frame.altitudes;
+    // Relative timestamps — subtract epoch offset so values fit in Float32
+    // A Float32 can represent integers up to 2^24 = 16,777,216 exactly.
+    // In microseconds that's ~16.7 seconds. For larger windows we use
+    // millisecond-relative values which gives ~16,777 seconds (~4.6 hours).
+    const absTimestamps = buf.timestamps;
+    const epochOffset = absTimestamps.length > 0 ? absTimestamps[0] : 0;
+    this._epochOffsetUs = epochOffset;
+
+    const relTimestamps = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      positions[i * 3] = lons[i];
-      positions[i * 3 + 1] = lats[i];
-      positions[i * 3 + 2] = alts[i];
+      // Convert to relative milliseconds for Float32 safety
+      relTimestamps[i] = (absTimestamps[i] - epochOffset) / 1000.0;
     }
+
+    this._cachedPositions = positions;
+    this._cachedColors = colors;
+    this._cachedRelTimestamps = relTimestamps;
+    this._cachedLength = n;
+    this._cachedDataVersion = this._dataVersion;
+    this._lastUpdateRows = n;
+  }
+
+  /**
+   * Build ScatterplotLayer with DataFilterExtension.
+   * Filter range is converted from absolute to relative milliseconds.
+   */
+  private _buildFilteredLayer(isDark: boolean): any[] {
+    if (!this._cachedPositions || this._cachedLength === 0) return [];
+
+    const n = this._cachedLength;
+
+    // Convert absolute filter range to relative milliseconds
+    const filterMinRel = (this._filterMinAbs - this._epochOffsetUs) / 1000.0;
+    const filterMaxRel = (this._filterMaxAbs - this._epochOffsetUs) / 1000.0;
 
     return [
       new ScatterplotLayer({
@@ -160,8 +229,9 @@ export class MapRenderer {
         data: {
           length: n,
           attributes: {
-            getPosition: { value: positions, size: 3 },
-            getFillColor: { value: colors, size: 4 },
+            getPosition: { value: this._cachedPositions!, size: 3 },
+            getFillColor: { value: this._cachedColors!, size: 4 },
+            getFilterValue: { value: this._cachedRelTimestamps!, size: 1 },
           },
         },
         radiusMinPixels: 3,
@@ -169,9 +239,15 @@ export class MapRenderer {
         radiusScale: 1,
         filled: true,
         antialiasing: true,
+
+        // GPU-side time filter
+        extensions: [new DataFilterExtension({ filterSize: 1 })],
+        filterRange: [filterMinRel, filterMaxRel],
+
         updateTriggers: {
-          getPosition: this._renderVersion,
-          getFillColor: this._renderVersion,
+          getPosition: this._dataVersion,
+          getFillColor: this._dataVersion,
+          getFilterValue: this._dataVersion,
         },
       }),
     ];
@@ -179,9 +255,6 @@ export class MapRenderer {
 
   get lastUpdateRows(): number { return this._lastUpdateRows; }
   get basemapLoaded(): boolean { return this._basemapLoaded; }
-
-  /** Force a re-render on next update (e.g. after theme change) */
-  invalidate(): void { this._dirty = true; }
 
   destroy(): void {
     this.deck.finalize();

@@ -2,22 +2,25 @@
 // Pelorus — Client entry point
 // ---------------------------------------------------------------------------
 //
-// Phase 3: Full data pipeline with deck.gl rendering.
-// WebSocket → Arrow IPC decode → Position buffer → deck.gl ScatterplotLayer
+// Phase 5: Full data pipeline with GPU-side time filtering.
+// WebSocket → Arrow decode → Position buffer → deck.gl + DataFilterExtension
+//
+// The time slider updates only a shader uniform — zero CPU work,
+// zero data re-upload during scrubbing.
 // ---------------------------------------------------------------------------
 
 import { initTheme, toggleTheme, getTheme } from "./theme";
 import { decodeBatch } from "./decode";
 import { PositionBuffer } from "./buffer";
-import { MapRenderer, CurrentFrame } from "./map";
+import { MapRenderer } from "./map";
 import { PerfMonitor } from "./perf";
+import { TimeSlider } from "./timeslider";
 
 const WS_URL = `ws://${window.location.host}/ws`;
 const RECONNECT_INTERVAL_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
-// Buffer config: hold ~60 seconds at 2000 objects × 10 Hz = 1.2M rows
-// Tune down if memory constrained
+// Buffer: ~60 seconds at 2000 objects × 10 Hz = 1.2M rows
 const BUFFER_MAX_ROWS = 1_200_000;
 
 // --- DOM refs ---
@@ -28,6 +31,7 @@ const statsEl = document.getElementById("stats")!;
 const perfEl = document.getElementById("perf")!;
 const themeBtn = document.getElementById("theme-btn")!;
 const mapContainer = document.getElementById("map-container")!;
+const sliderContainer = document.getElementById("time-slider")!;
 
 // --- State ---
 let ws: WebSocket | null = null;
@@ -39,6 +43,15 @@ let totalBatches = 0;
 const buffer = new PositionBuffer({ maxRows: BUFFER_MAX_ROWS });
 const perf = new PerfMonitor();
 const map = new MapRenderer({ container: mapContainer });
+map.setBuffer(buffer);
+
+const timeSlider = new TimeSlider({
+  container: sliderContainer,
+  windowWidthSec: 1.0,
+  onRangeChange: (min, max) => {
+    map.setFilterRange(min, max);
+  },
+});
 
 // --- Theme ---
 initTheme();
@@ -153,7 +166,7 @@ function handleBinaryMessage(data: ArrayBuffer): void {
     const decoded = decodeBatch(data);
     totalBatches++;
 
-    // Feed into position buffer
+    // Append to rolling buffer
     buffer.append(
       decoded.timestamps,
       decoded.longitudes,
@@ -168,25 +181,16 @@ function handleBinaryMessage(data: ArrayBuffer): void {
     perf.recordBatch(decoded.stats.rowCount, decoded.stats.byteSize, decoded.stats.decodeTimeMs);
     perf.setBufferRows(buffer.length);
 
-    // Build current frame for live rendering (latest positions only)
-    const n = decoded.stats.rowCount;
-    const catIndices = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      catIndices[i] = buffer.getCategoryIndex(decoded.categories[i] ?? "unknown");
+    // Tell renderer buffer has new data
+    map.markDataDirty();
+
+    // Update time slider with buffer range
+    const timeRange = buffer.timeRange;
+    if (timeRange) {
+      timeSlider.setBufferRange(timeRange[0], timeRange[1]);
     }
-    const frame: CurrentFrame = {
-      count: n,
-      longitudes: decoded.longitudes,
-      latitudes: decoded.latitudes,
-      altitudes: decoded.altitudes,
-      speeds: decoded.speeds,
-      headings: decoded.headings,
-      categories: catIndices,
-    };
-    map.setCurrentFrame(frame);
 
     // Update data stats bar
-    const timeRange = buffer.timeRange;
     const windowSec = timeRange
       ? ((timeRange[1] - timeRange[0]) / 1_000_000).toFixed(1)
       : "0";
@@ -196,17 +200,17 @@ function handleBinaryMessage(data: ArrayBuffer): void {
       `<span class="stat">batch <b>#${totalBatches}</b></span>`,
       `<span class="stat">window <b>${windowSec}s</b></span>`,
       `<span class="stat">categories <b>${buffer.categoryCount}</b></span>`,
+      `<span class="stat">slider <b>${timeSlider.mode}</b></span>`,
     ].join("");
 
     // Log sample every 50 batches
     if (totalBatches % 50 === 1 && decoded.objectIds.length > 0) {
-      const i = 0;
       log("data",
-        `${decoded.objectIds[i]} ` +
-        `lon=${decoded.longitudes[i].toFixed(3)} ` +
-        `lat=${decoded.latitudes[i].toFixed(3)} ` +
-        `alt=${decoded.altitudes[i]?.toFixed(0) ?? "—"} ` +
-        `[${decoded.categories[i] ?? "—"}]`
+        `${decoded.objectIds[0]} ` +
+        `lon=${decoded.longitudes[0].toFixed(3)} ` +
+        `lat=${decoded.latitudes[0].toFixed(3)} ` +
+        `alt=${decoded.altitudes[0]?.toFixed(0) ?? "—"} ` +
+        `[${decoded.categories[0] ?? "—"}]`
       );
     }
 

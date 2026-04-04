@@ -17,10 +17,6 @@
       --ok:         #2ecc71;
       --err:        #e74c3c;
       --warn:       #f39c12;
-      --cat-alpha:  #4a9eff;
-      --cat-bravo:  #e94560;
-      --cat-charlie:#2ecc71;
-      --cat-delta:  #f39c12;
       --font-mono:  'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace;
     }
 
@@ -126,7 +122,6 @@
       min-height: 0;
     }
 
-    /* deck.gl canvas fills this container */
     #map-container canvas {
       position: absolute;
       top: 0;
@@ -135,24 +130,99 @@
       height: 100% !important;
     }
 
-    /* deck.gl tooltip */
-    .deck-tooltip {
-      background: var(--surface) !important;
-      color: var(--text) !important;
-      border: 1px solid var(--border) !important;
-      border-radius: 4px !important;
-      font-family: var(--font-mono) !important;
-      font-size: 11px !important;
-      padding: 6px 8px !important;
-      white-space: pre !important;
-      pointer-events: none;
-      z-index: 100;
+    /* --- Time slider --- */
+    #time-slider {
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      padding: 6px 12px;
+      z-index: 10;
+    }
+
+    .ts-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .ts-row-secondary {
+      margin-top: 4px;
+      padding-left: 2px;
+    }
+
+    .ts-mode {
+      background: var(--ok);
+      color: var(--bg);
+      border: none;
+      border-radius: 3px;
+      padding: 2px 8px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      min-width: 52px;
+      text-align: center;
+      transition: background 0.2s;
+    }
+
+    .ts-mode.scrub {
+      background: var(--warn);
+    }
+
+    .ts-slider, .ts-window {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .ts-slider::-webkit-slider-thumb, .ts-window::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      border: 2px solid var(--bg);
+      transition: transform 0.1s;
+    }
+
+    .ts-slider::-webkit-slider-thumb:hover, .ts-window::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+
+    .ts-slider::-moz-range-thumb, .ts-window::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      border: 2px solid var(--bg);
+    }
+
+    .ts-label, .ts-window-label, .ts-window-value {
+      font-size: 11px;
+      color: var(--text-dim);
+      min-width: 60px;
+      white-space: nowrap;
+    }
+
+    .ts-window-label { min-width: 52px; }
+    .ts-window-value { min-width: 40px; }
+
+    .ts-window {
+      max-width: 200px;
     }
 
     /* --- Log --- */
     #log {
-      height: 120px;
-      min-height: 60px;
+      height: 100px;
+      min-height: 50px;
       overflow-y: auto;
       background: var(--surface);
       border-top: 1px solid var(--border);
@@ -193,6 +263,8 @@
     <div id="perf"></div>
 
     <div id="map-container"></div>
+
+    <div id="time-slider"></div>
 
     <div id="log"></div>
   </div>

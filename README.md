@@ -2,7 +2,7 @@
 
 GPU-accelerated geospatial object tracker with Arrow IPC streaming and shader-side time filtering.
 
-**Current: Phase 4** — Natural Earth base map.
+**Current: Phase 5** — GPU-side time filtering with zero-cost scrubbing.
 
 ## Prerequisites
 
@@ -24,11 +24,9 @@ chmod +x scripts/*.sh
 ./scripts/dev.sh
 ```
 
-Open `http://127.0.0.1:3000` — colored dots moving over a vector world map.
+Open `http://127.0.0.1:3000` — colored dots streaming over a vector world map with time scrubbing.
 
 ## Configuration
-
-Environment variables control the data generator:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -43,12 +41,18 @@ PELORUS_OBJECTS=200 PELORUS_HZ=1 ./scripts/dev.sh
 PELORUS_OBJECTS=5000 PELORUS_HZ=10 ./scripts/dev.sh
 ```
 
-## Development
+## Time Slider
 
-```bash
-# watch mode: auto-rebuilds TS on save, runs server
-./scripts/watch.sh
-```
+The time slider filters the position buffer entirely on the GPU.
+
+- **LIVE mode** (green) — cursor auto-advances to the latest timestamp
+- **SCRUB mode** (amber) — drag the slider to scrub through buffered history
+- **Window width** — controls how much time around the cursor is visible
+  - Narrow (0.1s): shows one position per object — clean current view
+  - Wide (10s+): shows historical positions — trail-like visualization
+
+Scrubbing updates only a shader uniform. No data re-upload, no CPU work.
+Click LIVE/SCRUB button to toggle modes.
 
 ## Project Structure
 
@@ -67,36 +71,18 @@ PELORUS_OBJECTS=5000 PELORUS_HZ=10 ./scripts/dev.sh
 │   │   ├── main.ts         # Entry point, pipeline wiring
 │   │   ├── decode.ts       # Arrow IPC decoder
 │   │   ├── buffer.ts       # Rolling position buffer (typed arrays)
-│   │   ├── map.ts          # deck.gl renderer (ScatterplotLayer)
-│   │   ├── basemap.ts      # Natural Earth GeoJSON loader + layers
+│   │   ├── map.ts          # deck.gl renderer + DataFilterExtension
+│   │   ├── basemap.ts      # Natural Earth GeoJSON loader
+│   │   ├── timeslider.ts   # Time slider (live/scrub modes)
 │   │   ├── perf.ts         # Real-time performance monitor
 │   │   └── theme.ts        # Dark/light theme manager
 │   └── dist/
-│       ├── index.html      # served by Axum as static fallback
+│       ├── index.html
 │       └── data/           # Natural Earth GeoJSON (downloaded)
 └── scripts/
-    ├── dev.sh              # build + run
-    ├── watch.sh            # watch + run
-    └── download-geodata.sh # fetch Natural Earth data
-```
-
-## Architecture
-
-```
-Rust server                          Browser client
-┌─────────────────┐                  ┌─────────────────────────┐
-│ Mock Generator   │                  │ WebSocket Client        │
-│ (N objects @ Hz) │                  │         │               │
-│       │          │   Arrow IPC      │   Arrow IPC Decoder     │
-│  Arrow RecordBatch ──── WS ──────► │   (apache-arrow JS)     │
-│       │          │   binary frames  │         │               │
-│  IPC Serializer  │                  │  Position Buffer        │
-└─────────────────┘                  │  (flat typed arrays)    │
-                                     │         │               │
-                                     │  deck.gl Layers         │
-                                     │  ├─ GeoJsonLayer (base) │
-                                     │  └─ ScatterplotLayer    │
-                                     └─────────────────────────┘
+    ├── dev.sh
+    ├── watch.sh
+    └── download-geodata.sh
 ```
 
 ## Phase Roadmap
@@ -104,8 +90,8 @@ Rust server                          Browser client
 1. ~~Skeleton — WebSocket echo~~
 2. ~~Arrow IPC schema + mock data + browser decode~~
 3. ~~deck.gl ScatterplotLayer — moving dots~~
-4. **Natural Earth base map** ← current
-5. Time slider with GPU-side filtering
+4. ~~Natural Earth base map~~
+5. **Time slider with GPU-side filtering** ← current
 6. Temporal chunk manager + ring buffer
 7. Viewport culling with H3
 8. Trail lines
