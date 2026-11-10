@@ -12,18 +12,6 @@
 use arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 
-/// Column indices for direct array access (avoids string lookups in hot path)
-pub mod col {
-    pub const TIMESTAMP_US: usize = 0;
-    pub const OBJECT_ID: &str = "object_id";
-    pub const LONGITUDE: usize = 2;
-    pub const LATITUDE: usize = 3;
-    pub const ALTITUDE_M: usize = 4;
-    pub const SPEED_MPS: usize = 5;
-    pub const HEADING_DEG: usize = 6;
-    pub const CATEGORY: usize = 7;
-}
-
 /// Build the canonical Pelorus record schema.
 ///
 /// Fields:

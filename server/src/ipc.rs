@@ -34,8 +34,8 @@ mod tests {
 
     #[test]
     fn roundtrip_ipc() {
-        let mut generator = MockGenerator::new(10);
-        let batch = generator.tick(1.0);
+        let mut generator = MockGenerator::seeded(10);
+        let batch = generator.tick_at(1.0, 100);
         let bytes = batch_to_ipc_bytes(&batch);
 
         // Verify we can read it back

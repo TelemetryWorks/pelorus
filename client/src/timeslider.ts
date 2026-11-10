@@ -73,7 +73,12 @@ export class TimeSlider {
         this._mode = "live";
         this.modeEl.textContent = "LIVE";
         this.modeEl.classList.remove("scrub");
+        this._cursorUs = this._bufferMaxUs;
       }
+      this._syncSliderPosition();
+      this._updateLabel();
+      this._emitRange();
+      this._checkBeyondBuffer();
     });
 
     // Slider interaction
@@ -97,6 +102,7 @@ export class TimeSlider {
         ? `${sec.toFixed(1)}s`
         : `${sec.toFixed(0)}s`;
       this._emitRange();
+      this._checkBeyondBuffer();
     });
 
     const initSec = this._windowWidthUs / 1_000_000;
@@ -123,6 +129,8 @@ export class TimeSlider {
   setServerRange(minUs: number, maxUs: number): void {
     this._serverMinUs = minUs;
     this._serverMaxUs = maxUs;
+    this._syncSliderPosition();
+    this._updateLabel();
   }
 
   /** Get the current filter range [min, max] in microseconds */
@@ -136,6 +144,7 @@ export class TimeSlider {
 
   /** The full navigable range — union of server and buffer */
   private get _fullMinUs(): number {
+    if (this._bufferMinUs === 0 && this._bufferMaxUs === 0) return this._serverMinUs;
     if (this._serverMinUs > 0 && this._serverMinUs < this._bufferMinUs) {
       return this._serverMinUs;
     }
@@ -182,14 +191,14 @@ export class TimeSlider {
 
   /** Check if the cursor is outside the client buffer and fire callback */
   private _checkBeyondBuffer(): void {
-    if (!this._onScrubBeyondBuffer) return;
+    if (!this._onScrubBeyondBuffer || this._mode !== "scrub") return;
     if (this._bufferMinUs === 0 && this._bufferMaxUs === 0) return;
 
     const [filterMin, filterMax] = this.getFilterRange();
 
     // If the filter range extends before the buffer's start, request history
     if (filterMin < this._bufferMinUs) {
-      this._onScrubBeyondBuffer(filterMin, this._bufferMinUs);
+      this._onScrubBeyondBuffer(filterMin, filterMax);
     }
   }
 }

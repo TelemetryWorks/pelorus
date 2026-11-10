@@ -5,7 +5,8 @@
   "scripts": {
     "build": "esbuild src/main.ts --bundle --outfile=dist/app.js --sourcemap --target=es2022 --format=esm",
     "watch": "esbuild src/main.ts --bundle --outfile=dist/app.js --sourcemap --target=es2022 --format=esm --watch",
-    "clean": "rm -rf dist/*.js dist/*.map"
+    "clean": "rm -rf dist/*.js dist/*.map",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@deck.gl/core": "^9.1.0",

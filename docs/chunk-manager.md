@@ -1,156 +1,119 @@
-# Temporal Chunk Manager
+# Temporal archive and history queries
 
-## Overview
+Phase 6 is a functional in-memory prototype. There is no persistence, H3 index,
+server-side viewport filtering, or production capacity claim.
 
-The chunk manager partitions incoming position data into fixed-duration time chunks and maintains them in a ring buffer with configurable retention. This enables clients to request historical data on demand when scrubbing beyond their local buffer.
+## Ingest and retention
 
-## Architecture
+One task starts with the server and owns one synthetic generator. It ingests
+once per tick, even with no sockets, then broadcasts the same IPC frame to all
+subscribers. Adding clients does not multiply archived records or create
+independent trajectories with the same object IDs. Timestamps are strictly
+increasing within a process, including after a backwards wall-clock adjustment.
 
-```
-                     live tick
-                        │
-                        ▼
-              ┌─────────────────┐
-              │  ChunkManager   │
-              │                 │
-              │  ┌───────────┐  │     ┌────────────────────────┐
-  ingest() ──►│  │ open chunk│  │     │   Sealed Chunk Ring    │
-              │  │ (batches  │──┼────►│                        │
-              │  │  accum.)  │  │     │  [c0] [c1] [c2] ... [cN]
-              │  └───────────┘  │     │   5s   5s   5s      5s │
-              │                 │     │                        │
-              │  seal when      │     │  max_chunks = 720      │
-              │  interval       │     │  retention = 1 hour    │
-              │  exceeded       │     │                        │
-              └─────────────────┘     │  Oldest evicted when   │
-                                      │  ring is full          │
-                query_range() ◄───────│                        │
-                                      └────────────────────────┘
-```
+The open chunk accumulates homogeneous-timestamp batches. It seals before a new
+batch would exceed the interval or row budget. Sealed chunks are stored in a
+`VecDeque` with cached IPC bytes; the combined RecordBatch is discarded after
+serialization. Empty batches are ignored. Incoming oversized batches are sliced
+to their newest rows. Ingest currently receives only the canonical mock schema.
 
-## Chunk Lifecycle
+Limits, all positive:
 
-1. **Open**: Incoming `RecordBatch` instances are appended to the open chunk's batch list. The open chunk tracks its time bounds (min/max timestamp).
-
-2. **Seal trigger**: When a new batch's timestamp exceeds `chunk_start + chunk_interval_us`, the open chunk is sealed. All accumulated batches are concatenated into a single `RecordBatch` using `arrow::compute::concat_batches`. The concatenated batch is serialized to Arrow IPC bytes and cached.
-
-3. **Sealed**: The chunk is immutable. It stores the concatenated `RecordBatch`, pre-serialized IPC bytes (as `Arc<Vec<u8>>`), time bounds, and row count. The IPC bytes are cached to avoid re-serialization on every client query.
-
-4. **Eviction**: When the sealed ring exceeds `max_chunks`, the oldest chunk is popped from the front of the `VecDeque`.
-
-## Configuration
-
-| Variable | Default | Description |
+| Setting | Default | Meaning |
 |---|---|---|
-| `PELORUS_CHUNK_INTERVAL_US` | `5,000,000` (5s) | Duration of each chunk in microseconds |
-| `PELORUS_MAX_CHUNKS` | `720` | Maximum sealed chunks retained |
+| `PELORUS_CHUNK_INTERVAL_US` | 5000000 | Target chunk interval in microseconds |
+| `PELORUS_MAX_CHUNKS` | 720 | Maximum sealed chunks |
+| `PELORUS_MAX_ROWS` | 1200000 | Maximum sealed plus open rows |
 
-At default settings: 720 chunks × 5 seconds = **1 hour** of history.
+Oldest sealed chunks are evicted until both caps hold. Open data is not queryable
+until sealed. Metadata describes only sealed/queryable rows; an empty archive has
+zero chunks, rows and bounds (`min_us = max_us = 0`). Bounds are actual retained
+row timestamps, not nominal bucket edges.
 
-The chunk interval should be tuned to balance query granularity against memory overhead. Shorter intervals (1–2s) give finer scrubbing resolution but more chunks to manage. Longer intervals (10–30s) reduce overhead but make the smallest queryable unit larger.
+**One hour is only the interval/count ceiling, not promised retention.** At
+2000 objects × 10 Hz, the default row budget is about 60 seconds including the
+open chunk; available sealed history is shorter. Sparse ticks, row-triggered
+sealing and chunk eviction also affect duration.
 
-## Query Protocol
+## Wire contract
 
-Clients request historical data via a JSON text message / binary response protocol over the same WebSocket used for live streaming.
-
-### Request: Meta
-
-```json
-{"type": "meta"}
-```
-
-Response:
-
-```json
-{
-  "type": "meta",
-  "chunk_count": 42,
-  "total_rows": 840000,
-  "min_us": 1700000000000000,
-  "max_us": 1700000210000000,
-  "chunk_interval_us": 5000000
-}
-```
-
-The client uses this to know the server's full archive range, which may extend further back than the client's local buffer.
-
-### Request: Query
+Client text messages:
 
 ```json
-{"type": "query", "min_us": 1700000050000000, "max_us": 1700000100000000}
+{"type":"meta"}
+{"type":"query","min_us":100,"max_us":200}
 ```
 
-Response (header, then binary frames):
+Bounds are inclusive integer microseconds, ordered and within JavaScript's safe
+integer range. Invalid JSON, fractional/out-of-range or reversed bounds receive
+`{"type":"error","message":"..."}` with no binary frames.
+
+Metadata:
 
 ```json
-{
-  "type": "query_response",
-  "chunk_count": 10,
-  "min_us": 1700000050000000,
-  "max_us": 1700000100000000,
-  "total_rows": 200000
-}
+{"type":"meta","chunk_count":2,"total_rows":6,"min_us":100,"max_us":200,"chunk_interval_us":10}
 ```
 
-Followed by `chunk_count` binary WebSocket messages, each containing a complete Arrow IPC stream for one chunk.
+Query header:
 
-### Client State Machine
-
-The client maintains a simple state machine to distinguish live frames from query response frames:
-
-```
-                        ┌──────────┐
-             binary     │          │  binary
-    ┌──────────────────►│  LIVE    │◄──────────┐
-    │    (live frame)   │          │            │
-    │                   └────┬─────┘            │
-    │                        │                  │
-    │              query_response               │
-    │              (chunk_count=N)               │
-    │                        │                  │
-    │                   ┌────▼─────┐            │
-    │                   │          │  binary    │
-    │                   │ LOADING  ├────────────┘
-    │                   │          │  (N frames
-    │                   └──────────┘   received)
-    │                                           │
-    └───────────────────────────────────────────┘
+```json
+{"type":"query_response","chunk_count":2,"min_us":100,"max_us":200,"total_rows":6}
 ```
 
-In both states, binary frames are decoded and appended to the same position buffer. The distinction only matters for logging and preventing duplicate query requests.
+Exactly `chunk_count` Arrow IPC stream messages follow, contiguously. No live
+frames or metadata interleave between that header and its frames. Each frame is
+one **whole sealed chunk overlapping** the requested range, so it may contain
+rows outside the requested bounds. `total_rows` sums transmitted rows, not chunk
+count. An empty response has both counts zero. The GPU filter selects the visible
+window. There is no pagination or request ID: a client permits one active query
+per connection and keeps only the latest queued scrub range.
 
-## Memory Budget
+The response is snapshotted synchronously under the archive mutex. All network
+awaits, including the header send, happen after the guard is dropped. Snapshot
+Arcs remain valid after archive eviction. Failed sends stop the response.
 
-Each sealed chunk stores:
-- The concatenated `RecordBatch` (~48 bytes/row for numeric columns + variable-length strings)
-- The pre-serialized IPC bytes (~similar size, as Arrow IPC is not compressed)
+## Client behavior
 
-At default settings (2,000 objects × 10 Hz × 5-second chunks):
+The live buffer and lazily allocated history-view buffer each retain at most
+1.2M rows. History replaces the preceding query result and merges each incoming
+frame chronologically. Duplicate `(timestamp_us, object_id)` records collapse;
+existing records win if payloads disagree. Retained live rows within the requested
+window are merged into the completed history view so the retention boundary has
+no artificial gap. Oversized results retain newest rows. The buffers' bounds reflect retained rows. A historical view remains separate
+from the advancing live window; LIVE switches back immediately.
 
-| Item | Size |
-|---|---|
-| Rows per chunk | 100,000 |
-| RecordBatch memory | ~5 MB |
-| IPC bytes (cached) | ~5 MB |
-| Per-chunk total | ~10 MB |
-| Full ring (720 chunks) | ~7.2 GB |
+The client normalizes fractional slider bounds outwards to integer microseconds.
+It requests the visible window, rather than everything between the cursor and
+live retention. Loaded-range suppression applies only to a complete nonempty
+result that fits its row cap. Empty/error results can be retried. A newer scrub
+range supersedes older queued requests. Disconnect resets request, pending-frame,
+coverage and server metadata state and clears both buffers. Decode failure,
+malformed framing or a 15-second response timeout closes the socket; continuing
+would risk classifying remaining history frames as live.
 
-For production deployments with 1-hour retention, the server needs sufficient memory for the full ring. The IPC byte cache can be disabled (serialize on demand) to halve memory usage at the cost of CPU on query.
+## Bounded resources and limitations
 
-For the default 200 objects at 1 Hz (light load):
+Each socket subscribes to a 16-frame live broadcast queue. Missed ticks are
+skipped instead of accumulating catch-up work. A lagging subscriber disconnects;
+it reconnects to the current stream rather than silently retaining gaps.
+A live send has a 5-second deadline; an entire query response has a 10-second
+deadline. Incoming WebSocket messages are capped at 16 KiB. Ingest does not await
+socket I/O.
 
-| Item | Size |
-|---|---|
-| Rows per chunk | 1,000 |
-| Per-chunk total | ~100 KB |
-| Full ring (720 chunks) | ~72 MB |
+The row budget is **not a process-wide byte cap**. For this synthetic schema,
+numeric fields alone cost 48 bytes/row; 1.2M rows account for 57.6 MB before IDs,
+categories, IPC overhead and allocations. Sealing temporarily retains both the
+batches and concatenated/serialized output. A query may pin a previous archive
+snapshot while ingest evicts it, with another outgoing frame copy per socket.
+A default 2000-row live frame is roughly hundreds of KB; queues are frame-capped,
+not byte-capped. Memory grows with connection count; no global session limit is
+implemented. Set lower object/row/chunk budgets for constrained hosts.
 
-## Thread Safety
+Each client buffer has 58.8 MB of numeric typed arrays at capacity, plus ID
+references/strings and category maps. Two buffers can therefore use 117.6 MB for
+numeric arrays alone. Historical merges allocate temporary index arrays and a
+replacement buffer; render caches, Arrow decode buffers and GPU allocations add
+more. This implementation favors correctness over an optimized temporal/GPU
+ring. No zero-allocation, constant-cost scrubbing or FPS guarantee is made.
 
-The `ChunkManager` is wrapped in `Arc<Mutex<ChunkManager>>` and shared across all client connections via `AppState`. The mutex is held briefly during:
-
-1. `ingest()` — each tick (append a batch, possibly seal and evict)
-2. `query_range()` — on client request (iterate sealed chunks, clone `Arc<Vec<u8>>` pointers)
-3. `meta()` — on client request (read counts and bounds)
-
-The `Arc<Vec<u8>>` for IPC bytes ensures that query responses can be sent after releasing the lock, avoiding holding the mutex during WebSocket I/O.
+See [development.md](development.md) for reproducible checks.
