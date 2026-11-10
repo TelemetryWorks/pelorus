@@ -155,11 +155,17 @@ function requestHistoricalChunks(minUs: number, maxUs: number): void {
 function finishQuery(): void {
   liveResetAllowed = true;
   const next = queuedRange;
-  // Only cache coverage when the entire nonempty result fits. A row cap can
-  // truncate a response; that must not suppress a later request for missing data.
+  // Snapshot archived bounds before adding live-only rows. Requested open/future
+  // tails and live gaps are not evidence of archive coverage.
+  const archivedBounds = historyBuffer?.timeRange;
   const liveRows = activeRange && historyBuffer
     ? historyBuffer.mergeRangeFrom(buffer, ...activeRange) : 0;
-  loadedRange = queryRows > 0 && queryRows + liveRows <= BUFFER_MAX_ROWS ? activeRange : null;
+  loadedRange = null;
+  if (activeRange && archivedBounds && queryRows > 0 && queryRows + liveRows <= BUFFER_MAX_ROWS) {
+    const minUs = Math.max(activeRange[0], archivedBounds[0]);
+    const maxUs = Math.min(activeRange[1], archivedBounds[1]);
+    if (minUs <= maxUs) loadedRange = [minUs, maxUs];
+  }
   viewRange = historyBuffer?.length ? activeRange : null;
   resetQuery();
   selectView();

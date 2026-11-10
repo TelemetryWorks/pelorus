@@ -110,8 +110,14 @@ A real disconnect continues to clear all connection/history state.
 
 The client normalizes fractional slider bounds outwards to integer microseconds.
 It requests the visible window, rather than everything between the cursor and
-live retention. Loaded-range suppression applies only to a complete nonempty
-result that fits its row cap. Empty/error results can be retried. A newer scrub
+live retention. Loaded-range suppression is conservative archived coverage:
+before merging live rows, the client snapshots the completed response's actual
+archive bounds. It caches only their nonempty intersection with the requested
+range, and only when the complete nonempty response plus considered live rows fit
+the row cap; otherwise it caches nothing. Displayed history and its view bounds
+are independent of that cache. Live-only rows, unsealed/open tails and future
+request intervals never extend cached coverage, including across a live reset.
+Empty/error results can be retried. A newer scrub
 range supersedes older queued requests. Disconnect resets request, pending-frame,
 coverage and server metadata state and clears both buffers. Decode failure,
 malformed framing or a 15-second response timeout closes the socket; continuing

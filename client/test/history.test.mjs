@@ -373,3 +373,58 @@ test('previous query marker preserves completed view and next request awaiting i
   binary(c, [30]);
   assert.equal(c.run('queryInFlight'), false);
 });
+
+test('wide query does not cache the missing live-reset gap as archived coverage', () => {
+  const c = client(10);
+  binary(c, [100]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [0, 200]; requestHistoricalChunks(0, 200)');
+  header(c, 0, 200, 1, 1);
+  binary(c, [50]);
+  assert.deepEqual(Array.from(c.run('loadedRange')), [50, 50]);
+  text(c, { type: 'live_reset', skipped_frames: 4 });
+  assert.deepEqual(Array.from(c.run('loadedRange')), [50, 50]);
+  binary(c, [150]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [50, 100]);
+  c.run('requestHistoricalChunks(110, 120)');
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
+});
+
+for (const [min, max] of [[100, 100], [110, 120]]) {
+  test(`wide query leaves live-only/open-tail [${min}, ${max}] queryable`, () => {
+    const c = client(10);
+    binary(c, [100]);
+    c.run('requestHistoricalChunks(0, 200)');
+    header(c, 0, 200, 1, 1);
+    binary(c, [50]);
+    c.run(`requestHistoricalChunks(${min}, ${max})`);
+    assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2, `[${min}, ${max}] must requery`);
+  });
+}
+
+
+test('coverage caches only the intersection of requested and archived bounds', () => {
+  const c = client(10);
+  c.run('requestHistoricalChunks(15, 25)');
+  header(c, 15, 25, 1, 3);
+  binary(c, [10, 20, 30]);
+  assert.deepEqual(Array.from(c.run('loadedRange')), [15, 25]);
+  c.run('requestHistoricalChunks(16, 24)');
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 1);
+  c.run('requestHistoricalChunks(14, 15)');
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
+});
+
+test('truncated archive or archive plus live rows never caches coverage', () => {
+  for (const live of [[], [30]]) {
+    const c = client(2);
+    if (live.length) binary(c, live);
+    c.run('requestHistoricalChunks(0, 100)');
+    const times = live.length ? [10, 20] : [10, 20, 30];
+    header(c, 0, 100, 1, times.length);
+    binary(c, times);
+    assert.equal(c.run('loadedRange'), null);
+    assert.equal(c.run('historyBuffer.length'), 2);
+    c.run('requestHistoricalChunks(20, 20)');
+    assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
+  }
+});
