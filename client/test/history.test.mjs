@@ -384,7 +384,7 @@ test('wide query does not cache the missing live-reset gap as archived coverage'
   text(c, { type: 'live_reset', skipped_frames: 4 });
   assert.deepEqual(Array.from(c.run('loadedRange')), [50, 50]);
   binary(c, [150]);
-  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [50, 100]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [50, 100, 150]);
   c.run('requestHistoricalChunks(110, 120)');
   assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
 });
@@ -427,4 +427,58 @@ test('truncated archive or archive plus live rows never caches coverage', () => 
     c.run('requestHistoricalChunks(20, 20)');
     assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
   }
+});
+
+test('mixed history window refreshes from new live rows without expanding archive cache', () => {
+  const c = client(10);
+  binary(c, [100, 200, 300, 400]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [50, 150]; requestHistoricalChunks(50, 150)');
+  header(c, 50, 150, 1, 1);
+  binary(c, [50]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [50, 100]);
+  binary(c, [125]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [50, 100, 125]);
+  assert.deepEqual(Array.from(c.run('loadedRange')), [50, 50]);
+  c.run('filterRange = [110, 120]; selectView(); requestHistoricalChunks(110, 120)');
+  assert.equal(c.run('map.buffer === buffer'), true);
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
+});
+
+test('filter wholly beyond archived history selects live while awaiting requery', () => {
+  const c = client(10);
+  binary(c, [100]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [0, 200]; requestHistoricalChunks(0, 200)');
+  header(c, 0, 200, 1, 1);
+  binary(c, [50]);
+  text(c, { type: 'live_reset', skipped_frames: 4 });
+  binary(c, [150]);
+  c.run('filterRange = [110, 120]; selectView(); requestHistoricalChunks(110, 120)');
+  assert.equal(c.run('map.buffer === buffer'), true);
+  assert.deepEqual(Array.from(c.run('historyBuffer.timestamps')), [50, 100, 150]);
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
+});
+
+
+test('mixed refresh includes only incoming timestamps inside the visible window', () => {
+  const c = client(10);
+  binary(c, [100, 200, 300, 400]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [50, 150]; requestHistoricalChunks(50, 150)');
+  header(c, 50, 150, 1, 1);
+  binary(c, [50]);
+  binary(c, [125, 175]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [50, 100, 125]);
+  assert.deepEqual(Array.from(c.run('loadedRange')), [50, 50]);
+});
+
+test('mixed refresh invalidates archived coverage when bounded retention can evict it', () => {
+  const c = client(2);
+  binary(c, [100]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [50, 150]; requestHistoricalChunks(50, 150)');
+  header(c, 50, 150, 1, 1);
+  binary(c, [50]);
+  binary(c, [125]);
+  assert.deepEqual(Array.from(c.run('historyBuffer.timestamps')), [100, 125]);
+  assert.equal(c.run('loadedRange'), null);
+  c.run('requestHistoricalChunks(50, 50)');
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
 });

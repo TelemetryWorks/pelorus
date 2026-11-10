@@ -108,6 +108,20 @@ is replaced only when a newer query header arrives. Subsequent live rows form a
 new window; the client never claims live coverage across the skipped interval.
 A real disconnect continues to clear all connection/history state.
 
+Composite view selection uses **overlap**, not full-filter containment, with the
+completed response's archived bounds captured before live merging. Thus a filter
+`[50,150]` still shows archived `50` alongside live `100`, even when the archived
+bounds are only `[50,50]`. If no archived rows were returned, the existing live-only
+history view is anchored to its merged bounds. A filter wholly beyond that anchor
+selects the live buffer and remains eligible for a query.
+
+While that composite is selected, incoming live frames refresh it only within
+their timestamp span intersected with the visible filter. A new live `125` updates
+`[50,100]` to `[50,100,125]`; it does not extend the archive anchor or cached archive
+coverage. Refresh obeys the same row cap and newest-row eviction. If the prior
+row count plus considered live rows exceeds the cap, archive coverage is
+conservatively invalidated because archived rows may have been evicted.
+
 The client normalizes fractional slider bounds outwards to integer microseconds.
 It requests the visible window, rather than everything between the cursor and
 live retention. Loaded-range suppression is conservative archived coverage:

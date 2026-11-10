@@ -98,10 +98,11 @@ function updateThemeButton(): void {
 }
 
 // --- Historical chunk requests ---
-function selectView(): void {
+function selectView(): boolean {
   const useHistory = timeSlider.mode === "scrub" && historyBuffer && viewRange && filterRange
-    && filterRange[0] >= viewRange[0] && filterRange[1] <= viewRange[1];
+    && filterRange[0] <= viewRange[1] && filterRange[1] >= viewRange[0];
   map.setBuffer(useHistory ? historyBuffer! : buffer);
+  return Boolean(useHistory);
 }
 
 function resetQuery(): void {
@@ -166,7 +167,9 @@ function finishQuery(): void {
     const maxUs = Math.min(activeRange[1], archivedBounds[1]);
     if (minUs <= maxUs) loadedRange = [minUs, maxUs];
   }
-  viewRange = historyBuffer?.length ? activeRange : null;
+  // Anchor composite selection to archive data, not the whole request or later
+  // live additions. Empty archive replies retain the existing live-only view.
+  viewRange = archivedBounds ?? historyBuffer?.timeRange ?? null;
   resetQuery();
   selectView();
   if (next) requestHistoricalChunks(...next);
@@ -361,6 +364,19 @@ function handleBinaryMessage(data: ArrayBuffer): void {
       decoded.altitudes, decoded.speeds, decoded.headings,
       decoded.categories, decoded.objectIds,
     );
+    if (!isHistorical && decoded.timestamps.length > 0 && selectView() && historyBuffer && filterRange) {
+      let minUs = Infinity;
+      let maxUs = -Infinity;
+      for (const timestamp of decoded.timestamps) {
+        minUs = Math.min(minUs, Number(timestamp));
+        maxUs = Math.max(maxUs, Number(timestamp));
+      }
+      const previousRows = historyBuffer.length;
+      const liveRows = historyBuffer.mergeRangeFrom(buffer,
+        Math.max(filterRange[0], minUs), Math.min(filterRange[1], maxUs));
+      // Live refresh never enlarges archive coverage; eviction may invalidate it.
+      if (previousRows + liveRows > BUFFER_MAX_ROWS) loadedRange = null;
+    }
     if (isHistorical) {
       receivedQueryRows += decoded.stats.rowCount;
       if (--pendingQueryChunks === 0) {
