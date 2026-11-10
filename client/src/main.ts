@@ -2,11 +2,11 @@
 // Pelorus — Client entry point
 // ---------------------------------------------------------------------------
 //
-// Phase 5: Full data pipeline with GPU-side time filtering.
-// WebSocket → Arrow decode → Position buffer → deck.gl + DataFilterExtension
+// Phase 6: Temporal chunk manager + historical query support.
 //
-// The time slider updates only a shader uniform — zero CPU work,
-// zero data re-upload during scrubbing.
+// Live data streams in via Arrow IPC. When the user scrubs beyond the
+// client buffer range, a query is sent to the server for historical
+// chunks. Responses are decoded and merged into the same buffer.
 // ---------------------------------------------------------------------------
 
 import { initTheme, toggleTheme, getTheme } from "./theme";
@@ -15,12 +15,17 @@ import { PositionBuffer } from "./buffer";
 import { MapRenderer } from "./map";
 import { PerfMonitor } from "./perf";
 import { TimeSlider } from "./timeslider";
+import {
+  sendMessage,
+  parseServerMessage,
+  ServerTextMessage,
+  MetaResponse,
+} from "./protocol";
 
 const WS_URL = `ws://${window.location.host}/ws`;
 const RECONNECT_INTERVAL_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
-// Buffer: ~60 seconds at 2000 objects × 10 Hz = 1.2M rows
 const BUFFER_MAX_ROWS = 1_200_000;
 
 // --- DOM refs ---
@@ -39,6 +44,15 @@ let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let totalBatches = 0;
 
+// Query state machine
+let pendingQueryChunks = 0; // how many binary frames to expect as query results
+let queryInFlight = false;
+let lastQueryMin = 0;
+let lastQueryMax = 0;
+
+// Server meta
+let serverMeta: MetaResponse | null = null;
+
 // --- Core objects ---
 const buffer = new PositionBuffer({ maxRows: BUFFER_MAX_ROWS });
 const perf = new PerfMonitor();
@@ -50,6 +64,9 @@ const timeSlider = new TimeSlider({
   windowWidthSec: 1.0,
   onRangeChange: (min, max) => {
     map.setFilterRange(min, max);
+  },
+  onScrubBeyondBuffer: (min, max) => {
+    requestHistoricalChunks(min, max);
   },
 });
 
@@ -66,6 +83,31 @@ themeBtn.addEventListener("click", () => {
 function updateThemeButton(): void {
   themeBtn.textContent = getTheme() === "dark" ? "◐" : "◑";
   themeBtn.title = `switch to ${getTheme() === "dark" ? "light" : "dark"} mode`;
+}
+
+// --- Historical chunk requests ---
+function requestHistoricalChunks(minUs: number, maxUs: number): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (queryInFlight) return; // one at a time
+
+  // Don't re-request the same range
+  if (minUs === lastQueryMin && maxUs === lastQueryMax) return;
+
+  queryInFlight = true;
+  lastQueryMin = minUs;
+  lastQueryMax = maxUs;
+
+  log("sys", `requesting chunks [${formatTime(minUs)} .. ${formatTime(maxUs)}]`);
+  sendMessage(ws, { type: "query", min_us: minUs, max_us: maxUs });
+}
+
+function requestMeta(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  sendMessage(ws, { type: "meta" });
+}
+
+function formatTime(us: number): string {
+  return `${(us / 1_000_000).toFixed(1)}s`;
 }
 
 // --- Logging ---
@@ -140,13 +182,15 @@ function connect(): void {
     reconnectAttempts = 0;
     setStatus(true);
     log("sys", "connected — streaming Arrow IPC");
+    // Request initial server metadata
+    requestMeta();
   });
 
   ws.addEventListener("message", (ev: MessageEvent) => {
     if (ev.data instanceof ArrayBuffer) {
       handleBinaryMessage(ev.data);
     } else if (typeof ev.data === "string") {
-      log("recv", ev.data);
+      handleTextMessage(ev.data);
     }
   });
 
@@ -161,12 +205,55 @@ function connect(): void {
   });
 }
 
+function handleTextMessage(text: string): void {
+  const msg = parseServerMessage(text);
+  if (!msg) {
+    log("recv", text);
+    return;
+  }
+
+  switch (msg.type) {
+    case "meta":
+      serverMeta = msg;
+      timeSlider.setServerRange(msg.min_us, msg.max_us);
+      log("sys",
+        `server: ${msg.chunk_count} chunks, ` +
+        `${msg.total_rows.toLocaleString()} rows, ` +
+        `${((msg.max_us - msg.min_us) / 1_000_000).toFixed(1)}s history`
+      );
+      break;
+
+    case "query_response":
+      pendingQueryChunks = msg.chunk_count;
+      log("sys", `receiving ${msg.chunk_count} historical chunks`);
+      if (msg.chunk_count === 0) {
+        queryInFlight = false;
+      }
+      break;
+
+    case "error":
+      log("err", `server: ${msg.message}`);
+      queryInFlight = false;
+      break;
+  }
+}
+
 function handleBinaryMessage(data: ArrayBuffer): void {
   try {
     const decoded = decodeBatch(data);
+    const isHistorical = pendingQueryChunks > 0;
+
+    if (isHistorical) {
+      pendingQueryChunks--;
+      if (pendingQueryChunks === 0) {
+        queryInFlight = false;
+        log("sys", "historical chunk load complete");
+      }
+    }
+
     totalBatches++;
 
-    // Append to rolling buffer
+    // Append to rolling buffer (both live and historical data)
     buffer.append(
       decoded.timestamps,
       decoded.longitudes,
@@ -194,13 +281,17 @@ function handleBinaryMessage(data: ArrayBuffer): void {
     const windowSec = timeRange
       ? ((timeRange[1] - timeRange[0]) / 1_000_000).toFixed(1)
       : "0";
+    const serverSec = serverMeta
+      ? ((serverMeta.max_us - serverMeta.min_us) / 1_000_000).toFixed(0)
+      : "—";
 
     statsEl.innerHTML = [
       `<span class="stat">objects <b>${decoded.stats.rowCount.toLocaleString()}</b></span>`,
       `<span class="stat">batch <b>#${totalBatches}</b></span>`,
-      `<span class="stat">window <b>${windowSec}s</b></span>`,
-      `<span class="stat">categories <b>${buffer.categoryCount}</b></span>`,
-      `<span class="stat">slider <b>${timeSlider.mode}</b></span>`,
+      `<span class="stat">buffer <b>${windowSec}s</b></span>`,
+      `<span class="stat">server <b>${serverSec}s</b></span>`,
+      `<span class="stat">mode <b>${timeSlider.mode}</b></span>`,
+      isHistorical ? `<span class="stat" style="color:var(--warn)">loading <b>${pendingQueryChunks}</b></span>` : "",
     ].join("");
 
     // Log sample every 50 batches
@@ -232,6 +323,11 @@ function scheduleReconnect(): void {
     connect();
   }, RECONNECT_INTERVAL_MS);
 }
+
+// --- Periodic meta refresh ---
+setInterval(() => {
+  requestMeta();
+}, 10_000);
 
 // --- Render loop ---
 function renderLoop(): void {
