@@ -482,3 +482,21 @@ test('mixed refresh invalidates archived coverage when bounded retention can evi
   c.run('requestHistoricalChunks(50, 50)');
   assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
 });
+
+test('oversized response displays retained history in SCRUB even with null archive coverage', () => {
+  const c = client(2);
+  binary(c, [100]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [50, 80]; requestHistoricalChunks(50, 80)');
+  header(c, 50, 80, 1, 3);
+  binary(c, [50, 60, 70]);
+  assert.equal(c.run('loadedRange'), null);
+  assert.equal(c.run('timeSlider.mode'), 'scrub');
+  assert.equal(c.run('map.buffer === historyBuffer'), true);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [60, 70]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timeRange')), [60, 70]);
+  text(c, { type: 'live_reset', skipped_frames: 4 });
+  assert.equal(c.run('map.buffer === historyBuffer'), true);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [60, 70]);
+  c.run('requestHistoricalChunks(50, 55)');
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
+});
