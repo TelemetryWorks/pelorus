@@ -41,12 +41,21 @@ export interface ErrorResponse {
   message: string;
 }
 
-export type ServerTextMessage = MetaResponse | QueryResponse | ErrorResponse;
+/** Post-query gap boundary before the oldest retained live frame. */
+export interface LiveReset {
+  type: "live_reset";
+  skipped_frames: number;
+}
+
+export type ServerTextMessage = MetaResponse | QueryResponse | ErrorResponse | LiveReset;
 
 export function parseServerMessage(text: string): ServerTextMessage | null {
   try {
     const msg = JSON.parse(text);
     if (!msg || typeof msg !== "object") return null;
+    if (msg.type === "live_reset") {
+      return Object.keys(msg).length === 2 && Number.isSafeInteger(msg.skipped_frames) && msg.skipped_frames > 0 ? msg : null;
+    }
     if (msg.type === "error") return typeof msg.message === "string" ? msg : null;
     if (msg.type !== "meta" && msg.type !== "query_response") return null;
     if (![msg.min_us, msg.max_us].every(Number.isSafeInteger) || msg.min_us > msg.max_us) return null;

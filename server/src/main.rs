@@ -16,7 +16,7 @@ use axum::{
     routing::get,
 };
 use chunks::{ChunkConfig, ChunkManager};
-use futures::{Sink, SinkExt, StreamExt};
+use futures::{Sink, SinkExt, Stream, StreamExt};
 use generator::MockGenerator;
 use ipc::batch_to_ipc_bytes;
 use protocol::{ClientMessage, ServerMessage};
@@ -156,23 +156,39 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
-    let mut live = state.live.subscribe();
     let (mut sender, mut receiver) = socket.split();
+    handle_session(&mut sender, &mut receiver, &state).await;
+}
+
+async fn handle_session<S, R>(sender: &mut S, receiver: &mut R, state: &AppState)
+where
+    S: Sink<Message> + Unpin,
+    R: Stream<Item = Result<Message, axum::Error>> + Unpin,
+{
+    let mut live = state.live.subscribe();
     loop {
         tokio::select! {
-            frame = live.recv() => match frame {
-                Ok(bytes) => if !matches!(tokio::time::timeout(Duration::from_secs(5),
-                    sender.send(Message::Binary(bytes.as_ref().clone().into()))).await, Ok(Ok(()))) { break; },
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "disconnecting lagging client; reconnect for current stream");
-                    break;
-                },
-                Err(broadcast::error::RecvError::Closed) => break,
+            frame = live.recv() => {
+                if !send_live(frame, false, sender).await { break; }
             },
             msg = receiver.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    if !matches!(tokio::time::timeout(Duration::from_secs(10),
-                        handle_client_message(&text, &state, &mut sender)).await, Ok(Ok(()))) { break; }
+                    match tokio::time::timeout(Duration::from_secs(10),
+                        handle_client_message(&text, state, sender)).await {
+                        Ok(Ok(true)) => {
+                            // Exactly one immediate receive attempt after a query,
+                            // before another client message can win select!.
+                            let frame = match live.try_recv() {
+                                Ok(bytes) => Ok(bytes),
+                                Err(broadcast::error::TryRecvError::Lagged(n)) => Err(broadcast::error::RecvError::Lagged(n)),
+                                Err(broadcast::error::TryRecvError::Empty) => continue,
+                                Err(broadcast::error::TryRecvError::Closed) => break,
+                            };
+                            if !send_live(frame, true, sender).await { break; }
+                        },
+                        Ok(Ok(false)) => {},
+                        _ => break,
+                    }
                 },
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 _ => {},
@@ -181,6 +197,42 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
     // Dropping both socket halves closes a stalled/lagging connection without
     // waiting on an unbounded graceful close handshake.
+}
+
+// Both normal live frames and the optional query boundary use the existing live
+// send deadline. A Lagged result already rebases to the oldest retained frame;
+// do not resubscribe (that would discard additional frames without counting them).
+async fn send_live<S: Sink<Message> + Unpin>(
+    frame: Result<Arc<Vec<u8>>, broadcast::error::RecvError>,
+    recover_query_lag: bool,
+    sender: &mut S,
+) -> bool {
+    let message = match frame {
+        Ok(bytes) => Message::Binary(bytes.as_ref().clone().into()),
+        Err(broadcast::error::RecvError::Lagged(skipped))
+            if recover_query_lag && skipped > 0 && skipped <= MAX_SAFE_INTEGER as u64 =>
+        {
+            Message::Text(
+                serde_json::to_string(&ServerMessage::LiveReset {
+                    skipped_frames: skipped,
+                })
+                .unwrap()
+                .into(),
+            )
+        }
+        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+            warn!(
+                skipped,
+                "disconnecting lagging client; reconnect for current stream"
+            );
+            return false;
+        }
+        Err(broadcast::error::RecvError::Closed) => return false,
+    };
+    matches!(
+        tokio::time::timeout(Duration::from_secs(5), sender.send(message)).await,
+        Ok(Ok(()))
+    )
 }
 
 // No guard escapes this synchronous function. Only immutable frame snapshots
@@ -224,8 +276,9 @@ async fn handle_client_message<S: Sink<Message> + Unpin>(
     text: &str,
     state: &AppState,
     sender: &mut S,
-) -> Result<(), S::Error> {
+) -> Result<bool, S::Error> {
     let (header, frames) = response(text, state);
+    let completed_query = matches!(header, ServerMessage::QueryResponse { .. });
     sender
         .send(Message::Text(
             serde_json::to_string(&header).unwrap().into(),
@@ -236,7 +289,7 @@ async fn handle_client_message<S: Sink<Message> + Unpin>(
             .send(Message::Binary(frame.as_ref().clone().into()))
             .await?;
     }
-    Ok(())
+    Ok(completed_query)
 }
 
 #[cfg(test)]
@@ -319,6 +372,240 @@ mod tests {
         ));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn ordinary_live_lag_disconnects_without_a_marker() {
+        let (messages, disconnected) = overflow_during_transfer(false, false, false, false).await;
+        assert!(disconnected);
+        assert!(
+            !messages
+                .iter()
+                .any(|msg| matches!(msg, Message::Text(text) if text.contains("live_reset")))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repeated_lag_after_query_marker_disconnects_without_another_marker() {
+        let (messages, disconnected) = overflow_during_transfer(true, true, false, false).await;
+        assert!(disconnected);
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|msg| matches!(msg, Message::Text(text) if text.contains("live_reset")))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn normal_first_live_receive_consumes_query_recovery_opportunity() {
+        let (messages, disconnected) = overflow_during_transfer(true, false, true, false).await;
+        assert!(disconnected);
+        assert!(
+            !messages
+                .iter()
+                .any(|msg| matches!(msg, Message::Text(text) if text.contains("live_reset")))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_live_reset_send_disconnects_without_sending_live() {
+        let (messages, disconnected) = overflow_during_transfer(true, false, false, true).await;
+        assert!(disconnected);
+        assert_eq!(messages.len(), 3); // header, history, failed marker attempt
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn live_reset_send_keeps_existing_five_second_deadline() {
+        let state = state();
+        let mut sink = SlowCheckedSink {
+            state,
+            messages: Arc::new(Mutex::new(Vec::new())),
+            delay: Some(Box::pin(tokio::time::sleep(Duration::from_secs(6)))),
+            binary_count: 0,
+            delay_binary_at: 1,
+            delay_marker: false,
+            fail_marker: false,
+        };
+        let start = tokio::time::Instant::now();
+        assert!(!send_live(Err(broadcast::error::RecvError::Lagged(4)), true, &mut sink).await);
+        assert_eq!(start.elapsed(), Duration::from_secs(5));
+    }
+
+    struct SlowCheckedSink {
+        state: AppState,
+        messages: Arc<Mutex<Vec<Message>>>,
+        delay: Option<Pin<Box<tokio::time::Sleep>>>,
+        binary_count: usize,
+        delay_binary_at: usize,
+        delay_marker: bool,
+        fail_marker: bool,
+    }
+    impl Sink<Message> for SlowCheckedSink {
+        type Error = ();
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            assert!(self.state.chunks.try_lock().is_ok());
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(mut self: Pin<&mut Self>, msg: Message) -> Result<(), ()> {
+            if matches!(msg, Message::Binary(_)) {
+                self.binary_count += 1;
+            }
+            let first_binary =
+                matches!(msg, Message::Binary(_)) && self.binary_count == self.delay_binary_at;
+            let marker = matches!(&msg, Message::Text(text) if text.contains("live_reset"));
+            if first_binary || (marker && self.delay_marker) {
+                self.delay = Some(Box::pin(tokio::time::sleep(Duration::from_secs(3))));
+            }
+            self.messages.lock().unwrap().push(msg);
+            if marker && self.fail_marker {
+                return Err(());
+            }
+            Ok(())
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            assert!(self.state.chunks.try_lock().is_ok());
+            if let Some(delay) = &mut self.delay {
+                if delay.as_mut().poll(cx).is_pending() {
+                    return Poll::Pending;
+                }
+                self.delay = None;
+            }
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    async fn overflow_during_transfer(
+        query: bool,
+        delay_marker: bool,
+        normal_first: bool,
+        fail_marker: bool,
+    ) -> (Vec<Message>, bool) {
+        let mut state = state();
+        state.live = broadcast::channel(LIVE_QUEUE_FRAMES).0;
+        let mut generator = MockGenerator::seeded(1);
+        for time in [100, 110] {
+            ingest_tick(&state, &mut generator, 0.1, time);
+        }
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let sink = SlowCheckedSink {
+            state: state.clone(),
+            messages: messages.clone(),
+            delay: None,
+            binary_count: 0,
+            delay_binary_at: if normal_first { 2 } else { 1 },
+            delay_marker,
+            fail_marker,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let task_state = state.clone();
+        let task = tokio::spawn(async move {
+            let mut sink = sink;
+            let mut stream = futures::stream::poll_fn(move |cx| rx.poll_recv(cx));
+            handle_session(&mut sink, &mut stream, &task_state).await;
+        });
+        tokio::task::yield_now().await;
+        if query {
+            tx.send(Ok(Message::Text(
+                r#"{"type":"query","min_us":100,"max_us":100}"#.into(),
+            )))
+            .unwrap();
+        } else {
+            ingest_tick(&state, &mut generator, 0.1, 115);
+        }
+        tokio::task::yield_now().await;
+        if normal_first {
+            ingest_tick(&state, &mut generator, 0.1, 115);
+            tokio::task::yield_now().await;
+        }
+        if query {
+            // Queued while the history binary send is blocked. The live boundary
+            // must precede this metadata response, regardless of select fairness.
+            tx.send(Ok(Message::Text(r#"{"type":"meta"}"#.into())))
+                .unwrap();
+        }
+        // A transfer is blocked for 3s, while the independent 10Hz source
+        // publishes 20 frames in 2s. Exactly four exceed the 16-frame queue.
+        for i in 0..20 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            ingest_tick(&state, &mut generator, 0.1, 120 + i * 10);
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        if delay_marker {
+            for i in 0..20 {
+                tokio::time::advance(Duration::from_millis(100)).await;
+                ingest_tick(&state, &mut generator, 0.1, 400 + i * 10);
+            }
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        let disconnected = task.is_finished();
+        if !disconnected {
+            tx.send(Ok(Message::Close(None))).unwrap();
+        }
+        task.await.unwrap();
+        let result = messages.lock().unwrap().clone();
+        (result, disconnected)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn long_query_rebases_live_once_instead_of_discarding_completed_history() {
+        let (messages, disconnected) = overflow_during_transfer(true, false, false, false).await;
+        let markers: Vec<_> = messages
+            .iter()
+            .filter_map(|msg| match msg {
+                Message::Text(text) if text.contains("live_reset") => {
+                    Some(serde_json::from_str::<serde_json::Value>(text).unwrap())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            markers.len(),
+            1,
+            "successful 3s history transfer needs a live boundary"
+        );
+        assert_eq!(markers[0]["skipped_frames"], 4);
+        assert!(
+            !disconnected,
+            "post-query lag must not wipe completed history"
+        );
+        assert!(matches!(&messages[0], Message::Text(text) if text.contains("query_response")));
+        assert!(matches!(&messages[1], Message::Binary(_)));
+        assert!(matches!(&messages[2], Message::Text(text) if text.contains("live_reset")));
+        let resumed = messages[3..]
+            .iter()
+            .find_map(|message| match message {
+                Message::Binary(bytes) => Some(bytes),
+                _ => None,
+            })
+            .expect("live resumes after boundary");
+        let batch =
+            arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(resumed.as_ref()), None)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap();
+        let timestamp = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(
+            timestamp, 160,
+            "resume oldest retained frame, not latest (310)"
+        );
+        let meta_index = messages.iter().position(|message| matches!(message, Message::Text(text) if text.contains("\"type\":\"meta\""))).unwrap();
+        assert!(
+            meta_index > 2,
+            "queued client metadata must follow the live boundary"
+        );
+    }
+
     struct CheckedSink {
         state: AppState,
         messages: Vec<Message>,
@@ -355,13 +642,15 @@ mod tests {
             state: state.clone(),
             messages: Vec::new(),
         };
-        handle_client_message(
-            r#"{"type":"query","min_us":100,"max_us":105}"#,
-            &state,
-            &mut sink,
-        )
-        .await
-        .unwrap();
+        assert!(
+            handle_client_message(
+                r#"{"type":"query","min_us":100,"max_us":105}"#,
+                &state,
+                &mut sink,
+            )
+            .await
+            .unwrap()
+        );
         assert_eq!(sink.messages.len(), 2);
         let Message::Text(header) = &sink.messages[0] else {
             panic!("expected header")
@@ -370,9 +659,16 @@ mod tests {
         assert_eq!(header["total_rows"], 6);
         assert_eq!(header["chunk_count"], 1);
         assert!(matches!(sink.messages[1], Message::Binary(_)));
-        handle_client_message(r#"{"type":"meta"}"#, &state, &mut sink)
-            .await
-            .unwrap();
+        assert!(
+            !handle_client_message(r#"{"type":"meta"}"#, &state, &mut sink)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !handle_client_message("invalid", &state, &mut sink)
+                .await
+                .unwrap()
+        );
     }
 
     #[test]

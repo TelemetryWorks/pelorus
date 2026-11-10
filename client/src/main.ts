@@ -54,6 +54,7 @@ let receivedQueryRows = 0;
 let viewRange: [number, number] | null = null;
 let queryTimer: ReturnType<typeof setTimeout> | null = null;
 let filterRange: [number, number] | null = null;
+let liveResetAllowed = false;
 
 // Server meta
 let serverMeta: MetaResponse | null = null;
@@ -114,6 +115,7 @@ function resetQuery(): void {
 
 function resetConnection(): void {
   resetQuery();
+  liveResetAllowed = false;
   loadedRange = null;
   viewRange = null;
   serverMeta = null;
@@ -130,7 +132,7 @@ function requestHistoricalChunks(minUs: number, maxUs: number): void {
   maxUs = Math.ceil(maxUs);
   if (!Number.isSafeInteger(minUs) || !Number.isSafeInteger(maxUs) || minUs > maxUs) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  if (loadedRange && minUs >= loadedRange[0] && maxUs <= loadedRange[1]) { selectView(); return; }
+  if (loadedRange && minUs >= loadedRange[0] && maxUs <= loadedRange[1]) { queuedRange = null; selectView(); return; }
   if (queryInFlight) {
     queuedRange = activeRange?.[0] === minUs && activeRange?.[1] === maxUs ? null : [minUs, maxUs];
     return;
@@ -139,11 +141,7 @@ function requestHistoricalChunks(minUs: number, maxUs: number): void {
   activeRange = [minUs, maxUs];
   queryRows = 0;
   receivedQueryRows = 0;
-  viewRange = null;
   historyBuffer ??= new PositionBuffer({ maxRows: BUFFER_MAX_ROWS });
-  historyBuffer.clear();
-  loadedRange = null;
-  selectView();
   log("sys", `requesting chunks [${formatTime(minUs)} .. ${formatTime(maxUs)}]`);
   try {
     sendMessage(ws, { type: "query", min_us: minUs, max_us: maxUs });
@@ -155,6 +153,7 @@ function requestHistoricalChunks(minUs: number, maxUs: number): void {
 }
 
 function finishQuery(): void {
+  liveResetAllowed = true;
   const next = queuedRange;
   // Only cache coverage when the entire nonempty result fits. A row cap can
   // truncate a response; that must not suppress a later request for missing data.
@@ -307,10 +306,31 @@ function handleTextMessage(text: string): void {
         ws?.close();
         return;
       }
+      // Keep completed history while a new request awaits its header. A live
+      // reset from the previous response can still arrive during that window.
+      historyBuffer!.clear();
+      loadedRange = null;
+      viewRange = null;
+      selectView();
       pendingQueryChunks = msg.chunk_count;
       queryRows = msg.total_rows;
       log("sys", `receiving ${msg.chunk_count} historical chunks (${queryRows} rows)`);
       if (msg.chunk_count === 0) finishQuery();
+      break;
+
+    case "live_reset":
+      if (!liveResetAllowed || pendingQueryChunks > 0) {
+        resetQuery();
+        ws?.close();
+        return;
+      }
+      liveResetAllowed = false;
+      buffer.clear();
+      timeSlider.setBufferRange(0, 0);
+      selectView();
+      map.markDataDirty();
+      perf.setBufferRows(0);
+      log("sys", `live stream restarted after history: ${msg.skipped_frames} frames skipped; resuming oldest retained frame`);
       break;
 
     case "error": {
@@ -327,6 +347,7 @@ function handleBinaryMessage(data: ArrayBuffer): void {
   try {
     const isHistorical = pendingQueryChunks > 0;
     const decoded = decodeBatch(data);
+    if (!isHistorical) liveResetAllowed = false;
     totalBatches++;
     const target = isHistorical ? historyBuffer! : buffer;
     target.append(

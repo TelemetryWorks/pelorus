@@ -51,6 +51,11 @@ pub enum ServerMessage {
         total_rows: usize,
     },
 
+    /// Only after a completed query and before its first resumed live frame.
+    /// Tokio's exact lost count; resume at the oldest retained frame, not latest.
+    #[serde(rename = "live_reset")]
+    LiveReset { skipped_frames: u64 },
+
     /// Error response
     #[serde(rename = "error")]
     Error { message: String },

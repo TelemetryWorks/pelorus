@@ -39,6 +39,7 @@ test('eviction retains newest rows even for oversized old history', () => {
 // No browser/GPU is needed to exercise its request and reconnect behavior.
 function client(maxRows = 4) {
   const timers = [];
+  const logs = [];
   class Socket {
     static OPEN = 1;
     static CONNECTING = 0;
@@ -52,7 +53,7 @@ function client(maxRows = 4) {
     close() { this.emit('close', { code: 1006 }); }
     emit(type, data) { if (type === "close") this.readyState = 3; this.handlers[type]?.(data); }
   }
-  const element = () => ({ querySelector: element, classList: { add() {}, remove() {} }, addEventListener() {}, appendChild() {}, childElementCount: 0 });
+  const element = () => ({ querySelector: element, classList: { add() {}, remove() {} }, addEventListener() {}, appendChild(entry) { logs.push(entry.textContent); }, childElementCount: 0 });
   const code = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/^import[\s\S]*?from ["'][^"']+["'];/gm, '').replace('const BUFFER_MAX_ROWS = 1_200_000;', `const BUFFER_MAX_ROWS = ${maxRows};`);
   const context = vm.createContext({
     ...protocol, PositionBuffer, decodeBatch, WebSocket: Socket, window: { location: { host: 'test' } },
@@ -66,7 +67,7 @@ function client(maxRows = 4) {
     ArrayBuffer, console,
   });
   vm.runInContext(transformSync(code, { loader: 'ts', target: 'es2022' }).code, context);
-  return { socket: () => Socket.instances.at(-1), run: code => vm.runInContext(code, context), expire: () => timers.find(Boolean)?.() };
+  return { logs, socket: () => Socket.instances.at(-1), run: code => vm.runInContext(code, context), expire: () => timers.find(Boolean)?.() };
 }
 
 test('disconnect clears in-flight query, pending frames and range dedup', () => {
@@ -293,4 +294,82 @@ test('empty archive response still displays retained live rows within the window
   assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [100]);
   c.run('requestHistoricalChunks(50, 150)');
   assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 2);
+});
+
+test('post-query live reset keeps history and coverage while clearing only live continuity', () => {
+  const c = client();
+  binary(c, [100, 200]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [10, 20]; requestHistoricalChunks(10, 20)');
+  header(c, 10, 20, 1, 2);
+  binary(c, [10, 20]);
+  text(c, { type: 'live_reset', skipped_frames: 4 });
+  assert.equal(c.socket().readyState, 1);
+  assert.equal(c.run('buffer.length'), 0);
+  assert.ok(c.logs.some(log => log.includes('4 frames skipped') && log.includes('oldest retained')));
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [10, 20]);
+  c.run('requestHistoricalChunks(10, 20)');
+  assert.equal(c.socket().sent.filter(m => m.type === 'query').length, 1);
+  binary(c, [300]);
+  assert.deepEqual(Array.from(c.run('buffer.timestamps')), [300]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [10, 20]);
+});
+
+
+test('malformed live reset markers close the connection', () => {
+  for (const skipped_frames of [undefined, null, 0, -1, 1.5, '4', 9007199254740992]) {
+    const c = client();
+    c.run('requestHistoricalChunks(10, 20)');
+    header(c, 10, 20, 0, 0);
+    text(c, { type: 'live_reset', skipped_frames });
+    assert.equal(c.socket().readyState, 3);
+  }
+  assert.equal(protocol.parseServerMessage('{"type":"live_reset","skipped_frames":4,"other":true}'), null);
+});
+
+test('live reset is allowed once only before the first post-query live frame', () => {
+  for (const scenario of ['no-query', 'partial-query', 'normal-live', 'duplicate']) {
+    const c = client();
+    if (scenario !== 'no-query') {
+      c.run('requestHistoricalChunks(10, 20)');
+      header(c, 10, 20, 1, 2);
+      if (scenario !== 'partial-query') binary(c, [10, 20]);
+    }
+    if (scenario === 'normal-live') binary(c, [100]);
+    if (scenario === 'duplicate') text(c, { type: 'live_reset', skipped_frames: 4 });
+    text(c, { type: 'live_reset', skipped_frames: 4 });
+    assert.equal(c.socket().readyState, 3, scenario);
+  }
+});
+
+test('real disconnect after a live reset still clears completed history', () => {
+  const c = client();
+  c.run('requestHistoricalChunks(10, 20)');
+  header(c, 10, 20, 1, 2);
+  binary(c, [10, 20]);
+  text(c, { type: 'live_reset', skipped_frames: 4 });
+  assert.equal(c.run('historyBuffer.length'), 2);
+  c.socket().close();
+  assert.equal(c.run('historyBuffer.length'), 0);
+  assert.equal(c.run('loadedRange'), null);
+});
+
+
+test('previous query marker preserves completed view and next request awaiting its header', () => {
+  const c = client();
+  binary(c, [100, 200]);
+  c.run('timeSlider.mode = "scrub"; filterRange = [10, 20]; requestHistoricalChunks(10, 20)');
+  header(c, 10, 20, 1, 2);
+  binary(c, [10, 20]);
+  c.run('requestHistoricalChunks(30, 40)');
+  text(c, { type: 'live_reset', skipped_frames: 4 });
+  assert.equal(c.socket().readyState, 1);
+  assert.equal(c.run('queryInFlight'), true);
+  assert.equal(c.run('pendingQueryChunks'), 0);
+  assert.deepEqual(Array.from(c.run('activeRange')), [30, 40]);
+  assert.deepEqual(Array.from(c.run('loadedRange')), [10, 20]);
+  assert.deepEqual(Array.from(c.run('map.buffer.timestamps')), [10, 20]);
+  assert.equal(c.run('buffer.length'), 0);
+  header(c, 30, 40, 1, 1);
+  binary(c, [30]);
+  assert.equal(c.run('queryInFlight'), false);
 });

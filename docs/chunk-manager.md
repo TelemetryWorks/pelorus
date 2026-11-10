@@ -79,8 +79,34 @@ The live buffer and lazily allocated history-view buffer each retain at most
 frame chronologically. Duplicate `(timestamp_us, object_id)` records collapse;
 existing records win if payloads disagree. Retained live rows within the requested
 window are merged into the completed history view so the retention boundary has
-no artificial gap. Oversized results retain newest rows. The buffers' bounds reflect retained rows. A historical view remains separate
-from the advancing live window; LIVE switches back immediately.
+no artificial gap. Oversized results retain newest rows. The buffers' bounds
+reflect retained rows. A historical view remains separate from the advancing live window; LIVE switches back immediately.
+
+After a successful query, the server makes exactly one immediate live receive
+attempt **before** processing any queued next client message. If that attempt
+reports lag, it sends a typed boundary before further live binaries:
+
+```json
+{"type":"live_reset","skipped_frames":4}
+```
+
+`skipped_frames` is Tokio's exact lost-frame count (a positive safe integer).
+The receiver resumes at its **oldest retained frame**, not the latest frame:
+up to 16 older queued frames can still follow. No additional frames are discarded,
+no catch-up buffer is added, and nothing interleaves within the counted history
+response. A normal first live frame or an empty receive attempt consumes this
+single opportunity without a marker. Metadata/errors do not arm recovery.
+Repeated or ordinary non-query lag still disconnects.
+
+The client accepts one marker only after a completed query and before its next
+live frame. It also accepts that previous-query marker while a newer request is
+in flight awaiting its header; it rejects markers during pending chunk frames,
+duplicates, malformed counts and markers without prior completion. The marker
+clears only live rows/bounds, logs a visible stream restart and keeps completed
+history, loaded coverage, SCRUB selection and any next request. Completed history
+is replaced only when a newer query header arrives. Subsequent live rows form a
+new window; the client never claims live coverage across the skipped interval.
+A real disconnect continues to clear all connection/history state.
 
 The client normalizes fractional slider bounds outwards to integer microseconds.
 It requests the visible window, rather than everything between the cursor and
@@ -94,11 +120,12 @@ would risk classifying remaining history frames as live.
 ## Bounded resources and limitations
 
 Each socket subscribes to a 16-frame live broadcast queue. Missed ticks are
-skipped instead of accumulating catch-up work. A lagging subscriber disconnects;
-it reconnects to the current stream rather than silently retaining gaps.
+skipped instead of accumulating catch-up work. Ordinary or repeated lag
+disconnects; the sole exception is the immediate post-query boundary above.
 A live send has a 5-second deadline; an entire query response has a 10-second
-deadline. Incoming WebSocket messages are capped at 16 KiB. Ingest does not await
-socket I/O.
+deadline; the optional boundary send uses the same 5-second live deadline.
+Failed or timed-out sends disconnect. Incoming WebSocket messages are capped at
+16 KiB. Ingest does not await socket I/O.
 
 The row budget is **not a process-wide byte cap**. For this synthetic schema,
 numeric fields alone cost 48 bytes/row; 1.2M rows account for 57.6 MB before IDs,
@@ -115,5 +142,17 @@ numeric arrays alone. Historical merges allocate temporary index arrays and a
 replacement buffer; render caches, Arrow decode buffers and GPU allocations add
 more. This implementation favors correctness over an optimized temporal/GPU
 ring. No zero-allocation, constant-cost scrubbing or FPS guarantee is made.
+
+The canonical mock category scope is exactly `alpha`, `bravo`, `charlie`, and
+`delta`; arbitrary external category cardinalities are outside this feature.
+
+The slow-query gap regression uses the actual generic session loop with a checked
+sink, seeded data and paused Tokio time (3s transfer, 20 ticks, 16-frame queue,
+exactly 4 lost frames). It checks marker-before-queued-message ordering and resumption
+at the oldest retained timestamp, plus ordinary/repeated lag and failed marker
+sends. Client tests cover strict marker parsing and history/request preservation.
+The gap scenario is unit-tested, not induced over a real slow network. Existing
+real WebSocket integration still checks shared trajectories and query IPC/counts.
+Evidence here is Linux aarch64 only; Windows has not been executed.
 
 See [development.md](development.md) for reproducible checks.
