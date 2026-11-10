@@ -2,11 +2,11 @@
 // Pelorus — Client entry point
 // ---------------------------------------------------------------------------
 //
-// Phase 5: Full data pipeline with GPU-side time filtering.
-// WebSocket → Arrow decode → Position buffer → deck.gl + DataFilterExtension
+// Phase 6: Temporal chunk manager + historical query support.
 //
-// The time slider updates only a shader uniform — zero CPU work,
-// zero data re-upload during scrubbing.
+// Live data streams in via Arrow IPC. When the user scrubs beyond the
+// client buffer range, a query is sent to the server for historical
+// chunks. Responses are decoded and merged into the same buffer.
 // ---------------------------------------------------------------------------
 
 import { initTheme, toggleTheme, getTheme } from "./theme";
@@ -15,12 +15,16 @@ import { PositionBuffer } from "./buffer";
 import { MapRenderer } from "./map";
 import { PerfMonitor } from "./perf";
 import { TimeSlider } from "./timeslider";
+import {
+  sendMessage,
+  parseServerMessage,
+  MetaResponse,
+} from "./protocol";
 
-const WS_URL = `ws://${window.location.host}/ws`;
+const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
 const RECONNECT_INTERVAL_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
-// Buffer: ~60 seconds at 2000 objects × 10 Hz = 1.2M rows
 const BUFFER_MAX_ROWS = 1_200_000;
 
 // --- DOM refs ---
@@ -39,8 +43,26 @@ let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let totalBatches = 0;
 
+// One request per connection, followed by a contiguous binary response.
+let pendingQueryChunks = 0;
+let queryInFlight = false;
+let activeRange: [number, number] | null = null;
+let queuedRange: [number, number] | null = null;
+let loadedRange: [number, number] | null = null;
+let queryRows = 0;
+let receivedQueryRows = 0;
+let viewRange: [number, number] | null = null;
+let queryTimer: ReturnType<typeof setTimeout> | null = null;
+let filterRange: [number, number] | null = null;
+let liveResetAllowed = false;
+
+// Server meta
+let serverMeta: MetaResponse | null = null;
+
 // --- Core objects ---
 const buffer = new PositionBuffer({ maxRows: BUFFER_MAX_ROWS });
+// Allocate history storage only when first queried. Each buffer is capped.
+let historyBuffer: PositionBuffer | null = null;
 const perf = new PerfMonitor();
 const map = new MapRenderer({ container: mapContainer });
 map.setBuffer(buffer);
@@ -49,7 +71,14 @@ const timeSlider = new TimeSlider({
   container: sliderContainer,
   windowWidthSec: 1.0,
   onRangeChange: (min, max) => {
+    filterRange = [min, max];
+    const liveRange = buffer.timeRange;
+    if (timeSlider.mode === "live" || (liveRange && min >= liveRange[0] && max <= liveRange[1])) queuedRange = null;
     map.setFilterRange(min, max);
+    selectView();
+  },
+  onScrubBeyondBuffer: (min, max) => {
+    requestHistoricalChunks(min, max);
   },
 });
 
@@ -66,6 +95,93 @@ themeBtn.addEventListener("click", () => {
 function updateThemeButton(): void {
   themeBtn.textContent = getTheme() === "dark" ? "◐" : "◑";
   themeBtn.title = `switch to ${getTheme() === "dark" ? "light" : "dark"} mode`;
+}
+
+// --- Historical chunk requests ---
+function selectView(): boolean {
+  const useHistory = timeSlider.mode === "scrub" && historyBuffer && viewRange && filterRange
+    && filterRange[0] <= viewRange[1] && filterRange[1] >= viewRange[0];
+  map.setBuffer(useHistory ? historyBuffer! : buffer);
+  return Boolean(useHistory);
+}
+
+function resetQuery(): void {
+  if (queryTimer !== null) clearTimeout(queryTimer);
+  queryTimer = null;
+  queryInFlight = false;
+  pendingQueryChunks = 0;
+  activeRange = null;
+  queuedRange = null;
+}
+
+function resetConnection(): void {
+  resetQuery();
+  liveResetAllowed = false;
+  loadedRange = null;
+  viewRange = null;
+  serverMeta = null;
+  historyBuffer?.clear();
+  buffer.clear();
+  timeSlider.setServerRange(0, 0);
+  timeSlider.setBufferRange(0, 0);
+  map.setBuffer(buffer);
+  map.markDataDirty();
+}
+
+function requestHistoricalChunks(minUs: number, maxUs: number): void {
+  minUs = Math.floor(minUs);
+  maxUs = Math.ceil(maxUs);
+  if (!Number.isSafeInteger(minUs) || !Number.isSafeInteger(maxUs) || minUs > maxUs) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (loadedRange && minUs >= loadedRange[0] && maxUs <= loadedRange[1]) { queuedRange = null; selectView(); return; }
+  if (queryInFlight) {
+    queuedRange = activeRange?.[0] === minUs && activeRange?.[1] === maxUs ? null : [minUs, maxUs];
+    return;
+  }
+  queryInFlight = true;
+  activeRange = [minUs, maxUs];
+  queryRows = 0;
+  receivedQueryRows = 0;
+  historyBuffer ??= new PositionBuffer({ maxRows: BUFFER_MAX_ROWS });
+  log("sys", `requesting chunks [${formatTime(minUs)} .. ${formatTime(maxUs)}]`);
+  try {
+    sendMessage(ws, { type: "query", min_us: minUs, max_us: maxUs });
+    queryTimer = setTimeout(() => { resetQuery(); ws?.close(); }, 15_000);
+  } catch {
+    resetQuery();
+    ws.close();
+  }
+}
+
+function finishQuery(): void {
+  liveResetAllowed = true;
+  const next = queuedRange;
+  // Snapshot archived bounds before adding live-only rows. Requested open/future
+  // tails and live gaps are not evidence of archive coverage.
+  const archivedBounds = historyBuffer?.timeRange;
+  const liveRows = activeRange && historyBuffer
+    ? historyBuffer.mergeRangeFrom(buffer, ...activeRange) : 0;
+  loadedRange = null;
+  if (activeRange && archivedBounds && queryRows > 0 && queryRows + liveRows <= BUFFER_MAX_ROWS) {
+    const minUs = Math.max(activeRange[0], archivedBounds[0]);
+    const maxUs = Math.min(activeRange[1], archivedBounds[1]);
+    if (minUs <= maxUs) loadedRange = [minUs, maxUs];
+  }
+  // Anchor composite selection to archive data, not the whole request or later
+  // live additions. Empty archive replies retain the existing live-only view.
+  viewRange = archivedBounds ?? historyBuffer?.timeRange ?? null;
+  resetQuery();
+  selectView();
+  if (next) requestHistoricalChunks(...next);
+}
+
+function requestMeta(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try { sendMessage(ws, { type: "meta" }); } catch { ws.close(); }
+}
+
+function formatTime(us: number): string {
+  return `${(us / 1_000_000).toFixed(1)}s`;
 }
 
 // --- Logging ---
@@ -133,50 +249,141 @@ function connect(): void {
   }
 
   log("sys", `connecting to ${WS_URL}...`);
-  ws = new WebSocket(WS_URL);
+  resetConnection();
+  const socket = new WebSocket(WS_URL);
+  ws = socket;
   ws.binaryType = "arraybuffer";
 
   ws.addEventListener("open", () => {
+    if (ws !== socket) return;
     reconnectAttempts = 0;
     setStatus(true);
     log("sys", "connected — streaming Arrow IPC");
+    // Request initial server metadata
+    requestMeta();
   });
 
   ws.addEventListener("message", (ev: MessageEvent) => {
+    if (ws !== socket) return;
     if (ev.data instanceof ArrayBuffer) {
       handleBinaryMessage(ev.data);
     } else if (typeof ev.data === "string") {
-      log("recv", ev.data);
+      handleTextMessage(ev.data);
     }
   });
 
   ws.addEventListener("close", (ev: CloseEvent) => {
+    if (ws !== socket) return;
+    resetConnection();
     setStatus(false);
     log("sys", `closed (code=${ev.code})`);
     scheduleReconnect();
   });
 
   ws.addEventListener("error", () => {
+    if (ws !== socket) return;
     log("err", "connection error");
+    resetConnection();
+    socket.close();
   });
+}
+
+function handleTextMessage(text: string): void {
+  const msg = parseServerMessage(text);
+  if (!msg) {
+    log("err", "invalid server protocol message");
+    resetQuery();
+    ws?.close();
+    return;
+  }
+
+  switch (msg.type) {
+    case "meta":
+      serverMeta = msg;
+      timeSlider.setServerRange(msg.min_us, msg.max_us);
+      log("sys",
+        `server: ${msg.chunk_count} chunks, ` +
+        `${msg.total_rows.toLocaleString()} rows, ` +
+        `${((msg.max_us - msg.min_us) / 1_000_000).toFixed(1)}s history`
+      );
+      break;
+
+    case "query_response":
+      if (!queryInFlight || pendingQueryChunks !== 0 || !activeRange
+        || msg.min_us !== activeRange[0] || msg.max_us !== activeRange[1]) {
+        resetQuery();
+        ws?.close();
+        return;
+      }
+      // Keep completed history while a new request awaits its header. A live
+      // reset from the previous response can still arrive during that window.
+      historyBuffer!.clear();
+      loadedRange = null;
+      viewRange = null;
+      selectView();
+      pendingQueryChunks = msg.chunk_count;
+      queryRows = msg.total_rows;
+      log("sys", `receiving ${msg.chunk_count} historical chunks (${queryRows} rows)`);
+      if (msg.chunk_count === 0) finishQuery();
+      break;
+
+    case "live_reset":
+      if (!liveResetAllowed || pendingQueryChunks > 0) {
+        resetQuery();
+        ws?.close();
+        return;
+      }
+      liveResetAllowed = false;
+      buffer.clear();
+      timeSlider.setBufferRange(0, 0);
+      selectView();
+      map.markDataDirty();
+      perf.setBufferRows(0);
+      log("sys", `live stream restarted after history: ${msg.skipped_frames} frames skipped; resuming oldest retained frame`);
+      break;
+
+    case "error": {
+      log("err", `server: ${msg.message}`);
+      const next = queuedRange;
+      resetQuery();
+      if (next) requestHistoricalChunks(...next);
+      break;
+    }
+  }
 }
 
 function handleBinaryMessage(data: ArrayBuffer): void {
   try {
+    const isHistorical = pendingQueryChunks > 0;
     const decoded = decodeBatch(data);
+    if (!isHistorical) liveResetAllowed = false;
     totalBatches++;
-
-    // Append to rolling buffer
-    buffer.append(
-      decoded.timestamps,
-      decoded.longitudes,
-      decoded.latitudes,
-      decoded.altitudes,
-      decoded.speeds,
-      decoded.headings,
-      decoded.categories,
-      decoded.objectIds,
+    const target = isHistorical ? historyBuffer! : buffer;
+    target.append(
+      decoded.timestamps, decoded.longitudes, decoded.latitudes,
+      decoded.altitudes, decoded.speeds, decoded.headings,
+      decoded.categories, decoded.objectIds,
     );
+    if (!isHistorical && decoded.timestamps.length > 0 && selectView() && historyBuffer && filterRange) {
+      let minUs = Infinity;
+      let maxUs = -Infinity;
+      for (const timestamp of decoded.timestamps) {
+        minUs = Math.min(minUs, Number(timestamp));
+        maxUs = Math.max(maxUs, Number(timestamp));
+      }
+      const previousRows = historyBuffer.length;
+      const liveRows = historyBuffer.mergeRangeFrom(buffer,
+        Math.max(filterRange[0], minUs), Math.min(filterRange[1], maxUs));
+      // Live refresh never enlarges archive coverage; eviction may invalidate it.
+      if (previousRows + liveRows > BUFFER_MAX_ROWS) loadedRange = null;
+    }
+    if (isHistorical) {
+      receivedQueryRows += decoded.stats.rowCount;
+      if (--pendingQueryChunks === 0) {
+        if (receivedQueryRows !== queryRows) throw new Error("query row count mismatch");
+        finishQuery();
+      }
+    }
 
     perf.recordBatch(decoded.stats.rowCount, decoded.stats.byteSize, decoded.stats.decodeTimeMs);
     perf.setBufferRows(buffer.length);
@@ -194,13 +401,17 @@ function handleBinaryMessage(data: ArrayBuffer): void {
     const windowSec = timeRange
       ? ((timeRange[1] - timeRange[0]) / 1_000_000).toFixed(1)
       : "0";
+    const serverSec = serverMeta
+      ? ((serverMeta.max_us - serverMeta.min_us) / 1_000_000).toFixed(0)
+      : "—";
 
     statsEl.innerHTML = [
       `<span class="stat">objects <b>${decoded.stats.rowCount.toLocaleString()}</b></span>`,
       `<span class="stat">batch <b>#${totalBatches}</b></span>`,
-      `<span class="stat">window <b>${windowSec}s</b></span>`,
-      `<span class="stat">categories <b>${buffer.categoryCount}</b></span>`,
-      `<span class="stat">slider <b>${timeSlider.mode}</b></span>`,
+      `<span class="stat">buffer <b>${windowSec}s</b></span>`,
+      `<span class="stat">server <b>${serverSec}s</b></span>`,
+      `<span class="stat">mode <b>${timeSlider.mode}</b></span>`,
+      isHistorical ? `<span class="stat" style="color:var(--warn)">loading <b>${pendingQueryChunks}</b></span>` : "",
     ].join("");
 
     // Log sample every 50 batches
@@ -216,6 +427,9 @@ function handleBinaryMessage(data: ArrayBuffer): void {
 
   } catch (e) {
     log("err", `decode failed: ${e}`);
+    // Remaining response frames cannot safely be reclassified as live.
+    resetQuery();
+    ws?.close();
   }
 }
 
@@ -232,6 +446,11 @@ function scheduleReconnect(): void {
     connect();
   }, RECONNECT_INTERVAL_MS);
 }
+
+// --- Periodic meta refresh ---
+setInterval(() => {
+  requestMeta();
+}, 10_000);
 
 // --- Render loop ---
 function renderLoop(): void {

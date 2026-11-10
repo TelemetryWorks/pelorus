@@ -12,7 +12,6 @@ use arrow::record_batch::RecordBatch;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::schema::pelorus_schema_ref;
 
@@ -25,8 +24,8 @@ struct TrackedObject {
     lon: f64,
     lat: f64,
     alt: f64,
-    speed: f64,       // m/s
-    heading: f64,     // degrees
+    speed: f64,   // m/s
+    heading: f64, // degrees
     category: String,
 }
 
@@ -71,8 +70,12 @@ impl TrackedObject {
 
         // Wrap coordinates
         self.lat = self.lat.clamp(-85.0, 85.0);
-        if self.lon > 180.0 { self.lon -= 360.0; }
-        if self.lon < -180.0 { self.lon += 360.0; }
+        if self.lon > 180.0 {
+            self.lon -= 360.0;
+        }
+        if self.lon < -180.0 {
+            self.lon += 360.0;
+        }
     }
 }
 
@@ -85,7 +88,15 @@ pub struct MockGenerator {
 impl MockGenerator {
     /// Create a new generator with `n` synthetic objects
     pub fn new(n: usize) -> Self {
-        let mut rng = StdRng::from_entropy();
+        Self::with_rng(n, StdRng::from_entropy())
+    }
+
+    #[cfg(test)]
+    pub fn seeded(n: usize) -> Self {
+        Self::with_rng(n, StdRng::seed_from_u64(7))
+    }
+
+    fn with_rng(n: usize, mut rng: StdRng) -> Self {
         let objects = (0..n)
             .map(|i| TrackedObject::new(format!("OBJ-{i:04}"), &mut rng))
             .collect();
@@ -94,12 +105,7 @@ impl MockGenerator {
 
     /// Advance all objects by `dt` seconds and return a RecordBatch
     /// containing the current state of all objects.
-    pub fn tick(&mut self, dt: f64) -> RecordBatch {
-        let now_us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as i64;
-
+    pub fn tick_at(&mut self, dt: f64, now_us: i64) -> RecordBatch {
         let n = self.objects.len();
         let schema = pelorus_schema_ref();
 
@@ -148,20 +154,30 @@ mod tests {
 
     #[test]
     fn generator_produces_valid_batches() {
-        let mut generator = MockGenerator::new(50);
-        let batch = generator.tick(1.0);
+        let mut generator = MockGenerator::seeded(50);
+        let batch = generator.tick_at(1.0, 100);
         assert_eq!(batch.num_rows(), 50);
         assert_eq!(batch.num_columns(), 8);
     }
 
     #[test]
     fn objects_move_between_ticks() {
-        let mut generator = MockGenerator::new(1);
-        let b1 = generator.tick(1.0);
-        let b2 = generator.tick(1.0);
+        let mut generator = MockGenerator::seeded(1);
+        let b1 = generator.tick_at(1.0, 100);
+        let b2 = generator.tick_at(1.0, 100);
 
-        let lon1 = b1.column(2).as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(0);
-        let lon2 = b2.column(2).as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(0);
+        let lon1 = b1
+            .column(2)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap()
+            .value(0);
+        let lon2 = b2
+            .column(2)
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .unwrap()
+            .value(0);
         assert_ne!(lon1, lon2);
     }
 }

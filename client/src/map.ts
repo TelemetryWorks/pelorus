@@ -7,7 +7,7 @@
 // minimum) to avoid Float32 precision loss in WebGL shaders.
 //
 // The full position buffer is uploaded to the GPU; the time slider
-// updates only a shader uniform — zero CPU work during scrubbing.
+// updates filter props while reusing cached attribute arrays.
 // ---------------------------------------------------------------------------
 
 import { Deck, MapView } from "@deck.gl/core";
@@ -99,7 +99,9 @@ export class MapRenderer {
   }
 
   setBuffer(buffer: PositionBuffer): void {
+    if (this.buffer === buffer) return;
     this.buffer = buffer;
+    this.markDataDirty();
   }
 
   /** Call when new data has been appended to the buffer */
@@ -159,7 +161,14 @@ export class MapRenderer {
    * Expensive — only on new data.
    */
   private _rebuildCache(isDark: boolean): void {
-    if (!this.buffer || this.buffer.length === 0) return;
+    if (!this.buffer || this.buffer.length === 0) {
+      this._cachedLength = 0;
+      this._cachedPositions = null;
+      this._cachedColors = null;
+      this._cachedRelTimestamps = null;
+      this._cachedDataVersion = this._dataVersion;
+      return;
+    }
 
     const buf = this.buffer;
     const n = buf.length;
