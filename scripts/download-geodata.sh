@@ -11,32 +11,34 @@ mkdir -p "$DATA_DIR"
 
 BASE_URL="https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson"
 
+CURL_OPTIONS=(--fail --silent --show-error --location --proto '=https' --proto-redir '=https')
+
 echo "=== downloading Natural Earth 110m data ==="
 
 # Country polygons (land + borders)
 echo "  countries..."
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o "$DATA_DIR/ne_110m_admin_0_countries.geojson" \
+curl "${CURL_OPTIONS[@]}" -o "$DATA_DIR/ne_110m_admin_0_countries.geojson" \
   "$BASE_URL/ne_110m_admin_0_countries.geojson"
 
 # Coastline (backup/overlay)
 echo "  coastline..."
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o "$DATA_DIR/ne_110m_coastline.geojson" \
+curl "${CURL_OPTIONS[@]}" -o "$DATA_DIR/ne_110m_coastline.geojson" \
   "$BASE_URL/ne_110m_coastline.geojson"
 
 # Lakes
 echo "  lakes..."
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o "$DATA_DIR/ne_110m_lakes.geojson" \
+curl "${CURL_OPTIONS[@]}" -o "$DATA_DIR/ne_110m_lakes.geojson" \
   "$BASE_URL/ne_110m_lakes.geojson"
 
 # Graticule (lat/lon grid lines)
 echo "  graticules..."
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o "$DATA_DIR/ne_110m_graticules_30.geojson" \
+curl "${CURL_OPTIONS[@]}" -o "$DATA_DIR/ne_110m_graticules_30.geojson" \
   "$BASE_URL/ne_110m_graticules_30.geojson"
 
 echo ""
 echo "=== optional: higher detail 50m data ==="
 echo "  countries (50m)..."
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o "$DATA_DIR/ne_50m_admin_0_countries.geojson" \
+curl "${CURL_OPTIONS[@]}" -o "$DATA_DIR/ne_50m_admin_0_countries.geojson" \
   "$BASE_URL/ne_50m_admin_0_countries.geojson"
 
 echo ""
