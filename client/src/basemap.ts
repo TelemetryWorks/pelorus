@@ -8,30 +8,35 @@
 // Supports dark and light themes with distinct fill/stroke palettes.
 // ---------------------------------------------------------------------------
 
-import { GeoJsonLayer } from "@deck.gl/layers";
+import { GeoJsonLayer, type GeoJsonLayerProps } from "@deck.gl/layers";
 import { getTheme } from "./theme";
 
+type GeoDocument = Extract<GeoJsonLayerProps["data"], { type: string }>;
+
 interface GeoData {
-  countries: any | null;
-  coastline: any | null;
-  lakes: any | null;
-  graticules: any | null;
+  countries: GeoDocument | null;
+  coastline: GeoDocument | null;
+  lakes: GeoDocument | null;
+  graticules: GeoDocument | null;
 }
 
-const DARK_STYLE = {
-  landFill:       [18, 18, 26, 255] as [number, number, number, number],
-  landStroke:     [40, 40, 60, 180] as [number, number, number, number],
-  coastStroke:    [50, 50, 75, 200] as [number, number, number, number],
-  lakeFill:       [12, 12, 20, 255] as [number, number, number, number],
-  gratStroke:     [25, 25, 40, 80]  as [number, number, number, number],
+type Color = [number, number, number, number];
+type MapStyle = Record<"landFill" | "landStroke" | "coastStroke" | "lakeFill" | "gratStroke", Color>;
+
+const DARK_STYLE: MapStyle = {
+  landFill:       [18, 18, 26, 255],
+  landStroke:     [40, 40, 60, 180],
+  coastStroke:    [50, 50, 75, 200],
+  lakeFill:       [12, 12, 20, 255],
+  gratStroke:     [25, 25, 40, 80],
 };
 
-const LIGHT_STYLE = {
-  landFill:       [232, 232, 240, 255] as [number, number, number, number],
-  landStroke:     [180, 180, 200, 200] as [number, number, number, number],
-  coastStroke:    [140, 140, 165, 220] as [number, number, number, number],
-  lakeFill:       [200, 210, 230, 255] as [number, number, number, number],
-  gratStroke:     [210, 210, 225, 100] as [number, number, number, number],
+const LIGHT_STYLE: MapStyle = {
+  landFill:       [232, 232, 240, 255],
+  landStroke:     [180, 180, 200, 200],
+  coastStroke:    [140, 140, 165, 220],
+  lakeFill:       [200, 210, 230, 255],
+  gratStroke:     [210, 210, 225, 100],
 };
 
 export class BaseMap {
@@ -62,7 +67,8 @@ export class BaseMap {
       files.map(async ([key, path]) => {
         const res = await fetch(path);
         if (!res.ok) return [key, null] as const;
-        const json = await res.json();
+        // Static Natural Earth GeoJSON assets are the loader contract.
+        const json: GeoDocument = await res.json();
         return [key, json] as const;
       })
     );
@@ -79,12 +85,12 @@ export class BaseMap {
   }
 
   /** Build deck.gl layers for the base map. Returns empty array if not loaded. */
-  getLayers(): any[] {
+  getLayers(): GeoJsonLayer[] {
     if (!this._loaded) return [];
 
     const isDark = getTheme() === "dark";
     const style = isDark ? DARK_STYLE : LIGHT_STYLE;
-    const layers: any[] = [];
+    const layers: GeoJsonLayer[] = [];
 
     // Graticule grid (lowest z)
     if (this.data.graticules) {

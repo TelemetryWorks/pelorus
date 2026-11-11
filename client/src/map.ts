@@ -12,7 +12,7 @@
 
 import { Deck, MapView } from "@deck.gl/core";
 import { ScatterplotLayer } from "@deck.gl/layers";
-import { DataFilterExtension } from "@deck.gl/extensions";
+import { DataFilterExtension, type DataFilterExtensionProps } from "@deck.gl/extensions";
 import { BaseMap } from "./basemap";
 import { PositionBuffer } from "./buffer";
 import { getTheme } from "./theme";
@@ -41,14 +41,14 @@ const LIGHT_CATEGORY_COLORS: [number, number, number, number][] = [
 ];
 
 export interface MapConfig {
-  container: HTMLElement;
+  container: HTMLDivElement;
   initialLongitude?: number;
   initialLatitude?: number;
   initialZoom?: number;
 }
 
 export class MapRenderer {
-  private deck: Deck;
+  private deck: Deck<MapView>;
   private basemap: BaseMap;
   private buffer: PositionBuffer | null = null;
 
@@ -88,7 +88,8 @@ export class MapRenderer {
       },
       controller: true,
       parameters: {
-        depthTest: false,
+        depthCompare: "always",
+        depthWriteEnabled: false,
       },
     });
 
@@ -141,7 +142,7 @@ export class MapRenderer {
     }
 
     const baseLayers = this.basemap.getLayers();
-    const dataLayers = this._buildFilteredLayer(isDark);
+    const dataLayers = this._buildFilteredLayer();
 
     this.deck.setProps({
       layers: [...baseLayers, ...dataLayers],
@@ -223,7 +224,7 @@ export class MapRenderer {
    * Build ScatterplotLayer with DataFilterExtension.
    * Filter range is converted from absolute to relative milliseconds.
    */
-  private _buildFilteredLayer(isDark: boolean): any[] {
+  private _buildFilteredLayer(): ScatterplotLayer<never, DataFilterExtensionProps>[] {
     if (!this._cachedPositions || this._cachedLength === 0) return [];
 
     const n = this._cachedLength;
@@ -233,7 +234,7 @@ export class MapRenderer {
     const filterMaxRel = (this._filterMaxAbs - this._epochOffsetUs) / 1000.0;
 
     return [
-      new ScatterplotLayer({
+      new ScatterplotLayer<never, DataFilterExtensionProps>({
         id: "objects",
         data: {
           length: n,
