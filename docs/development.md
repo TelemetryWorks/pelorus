@@ -90,6 +90,29 @@ Client tests cover chronological merge, deduplication, eviction, full-live-buffe
 history viewing, latest-request queueing, reconnect, empty/error replies and
 decode failures. See the PR for exact executed commands and results.
 
+## Developer script transport and tool resolution
+
+`bash scripts/dev.sh` and `bash scripts/watch.sh` require executable local
+`client/node_modules/.bin/esbuild` installed from the existing lockfile. Missing
+or non-executable local tooling exits before Cargo/watch starts, with an explicit
+`npm ci --ignore-scripts` instruction. Neither script invokes npm/npx or an
+on-demand download fallback. Bundle/watch arguments and server commands are
+unchanged; a global esbuild installation does not satisfy the local requirement.
+
+`bash scripts/download-geodata.sh` permits only HTTPS for initial URLs and
+redirects and exits on HTTP 4xx/5xx. **Failure behavior changes:** an upstream 404,
+503 or HTTP downgrade now stops the script with a nonzero curl status instead of
+reporting success or saving an error response as geodata. The upstream URL,
+asset names and data destinations are unchanged. This adds no checksum/integrity
+pin, retry, atomic-file replacement or guarantee for mutable upstream data.
+
+Focused script tests use package-manager sentinels and real system curl against
+loopback HTTPS/HTTP fixtures. The temporary self-signed fixture identity is
+created with the existing system OpenSSL and removed afterward; no external
+geodata/network or user credentials are used. Ubuntu CI already supplies curl
+and OpenSSL; no package dependency is added. These tests do not establish browser
+rendering or external upstream availability.
+
 ## Settings
 
 | Variable | Default | Validation |

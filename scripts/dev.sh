@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
+ESBUILD="$ROOT/client/node_modules/.bin/esbuild"
+if [[ ! -x "$ESBUILD" ]]; then
+  echo "Missing local esbuild. Run npm ci --ignore-scripts in $ROOT/client." >&2
+  exit 1
+fi
 DATA_DIR="$ROOT/client/dist/data"
 
 # Check for geodata
@@ -14,7 +19,7 @@ fi
 
 echo "=== building client ==="
 cd "$ROOT/client"
-npx esbuild src/main.ts \
+"$ESBUILD" src/main.ts \
   --bundle \
   --outfile=dist/app.js \
   --sourcemap \
