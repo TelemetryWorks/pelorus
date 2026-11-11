@@ -73,10 +73,12 @@ export class BaseMap {
       })
     );
 
-    for (const result of results) {
+    for (const [index, result] of results.entries()) {
       if (result.status === "fulfilled" && result.value) {
         const [key, json] = result.value;
         this.data[key] = json;
+      } else if (result.status === "rejected") {
+        console.warn(`Failed to load basemap asset ${files[index][1]}`, result.reason);
       }
     }
 

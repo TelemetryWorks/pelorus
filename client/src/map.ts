@@ -92,6 +92,8 @@ export class MapRenderer {
     this.basemap.load().then(() => {
       this._basemapLoaded = true;
       this._dirty = true;
+    }).catch(error => {
+      console.warn("Failed to load basemap", error);
     });
   }
 
