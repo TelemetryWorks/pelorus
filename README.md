@@ -116,13 +116,18 @@ The slider range includes sealed server history. Scrubbing beyond local live ret
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace -j 2
-cargo clippy --workspace --all-targets -j 2 -- -D warnings
-cargo build -p server -j 2
+cargo test --workspace --locked -j 2
+cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
+cargo build -p server --locked -j 2
 cd client
-PELORUS_SERVER_BIN=../target/debug/server npm test
+npm ci --ignore-scripts
+npm run typeprep
+npm run typecheck
+PELORUS_SERVER_BIN=../target/debug/server npm run test:ci
 npm run build
 ```
 
-Node 24+ is required for the standard test harness. The frontend build is not a
-TypeScript typecheck. See [Development](docs/development.md) for test boundaries.
+Node 24+ is required for the standard test harness. The strict TypeScript check
+runs separately from the esbuild bundle. Linux CI requires real-server integration
+with zero skips; it does not validate browser/GPU performance. See
+[Development](docs/development.md) for the gate and test boundaries.

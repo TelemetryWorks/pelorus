@@ -6,7 +6,10 @@
     "build": "esbuild src/main.ts --bundle --outfile=dist/app.js --sourcemap --target=es2022 --format=esm",
     "watch": "esbuild src/main.ts --bundle --outfile=dist/app.js --sourcemap --target=es2022 --format=esm --watch",
     "clean": "rm -rf dist/*.js dist/*.map",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --project tsconfig.json",
+    "test:ci": "node scripts/ci-test.mjs",
+    "typeprep": "node scripts/repair-luma-declarations.mjs"
   },
   "dependencies": {
     "@deck.gl/core": "^9.1.0",
@@ -16,6 +19,7 @@
     "deck.gl": "^9.1.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.0",
+    "typescript": "7.0.2"
   }
 }

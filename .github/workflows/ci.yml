@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Linux checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RUST_TEST_THREADS: '2'
+      TOKIO_WORKER_THREADS: '2'
+      GOMAXPROCS: '2'
+      RUST_TOOLCHAIN: '1.99.1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.1'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+      - name: Rust format, Clippy, locked tests and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
+          cargo +"$RUST_TOOLCHAIN" clippy --workspace --all-targets --locked -- -D warnings
+          cargo +"$RUST_TOOLCHAIN" test --workspace --locked
+          cargo +"$RUST_TOOLCHAIN" build --workspace --locked
+      - name: Install locked client dependencies
+        working-directory: client
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Prepare locked dependency declarations (hash-checked, type-only)
+        working-directory: client
+        run: npm run typeprep
+      - name: Strict frontend typecheck
+        working-directory: client
+        run: npm run typecheck
+      - name: Client tests and required real-server integration (zero skips)
+        working-directory: client
+        env:
+          PELORUS_SERVER_BIN: ../target/debug/server
+        run: npm run test:ci
+      - name: Bundle frontend
+        working-directory: client
+        run: npm run build

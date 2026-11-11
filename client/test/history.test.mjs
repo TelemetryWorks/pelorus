@@ -57,7 +57,7 @@ function client(maxRows = 4) {
   const code = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/^import[\s\S]*?from ["'][^"']+["'];/gm, '').replace('const BUFFER_MAX_ROWS = 1_200_000;', `const BUFFER_MAX_ROWS = ${maxRows};`);
   const context = vm.createContext({
     ...protocol, PositionBuffer, decodeBatch, WebSocket: Socket, window: { location: { host: 'test' } },
-    document: { getElementById: element, createElement: element },
+    document: { getElementById: element, querySelector: element, createElement: element },
     initTheme() {}, toggleTheme() {}, getTheme: () => 'dark',
     MapRenderer: class { setBuffer(buffer) { this.buffer = buffer; } setFilterRange() {} markDataDirty() {} },
     TimeSlider: class { mode = "live"; setServerRange() {} setBufferRange() {} },

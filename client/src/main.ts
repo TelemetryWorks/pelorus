@@ -18,7 +18,7 @@ import { TimeSlider } from "./timeslider";
 import {
   sendMessage,
   parseServerMessage,
-  MetaResponse,
+  type MetaResponse,
 } from "./protocol";
 
 const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/ws`;
@@ -34,7 +34,7 @@ const logEl = document.getElementById("log")!;
 const statsEl = document.getElementById("stats")!;
 const perfEl = document.getElementById("perf")!;
 const themeBtn = document.getElementById("theme-btn")!;
-const mapContainer = document.getElementById("map-container")!;
+const mapContainer = document.querySelector<HTMLDivElement>("div#map-container")!;
 const sliderContainer = document.getElementById("time-slider")!;
 
 // --- State ---
@@ -206,12 +206,6 @@ function log(kind: LogKind, text: string): void {
 }
 
 // --- Stats display ---
-function formatBytes(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / 1048576).toFixed(1)} MB`;
-}
-
 function formatRate(bps: number): string {
   if (bps < 1024) return `${bps.toFixed(0)} B/s`;
   if (bps < 1048576) return `${(bps / 1024).toFixed(1)} KB/s`;

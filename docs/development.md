@@ -3,8 +3,8 @@
 ## Requirements and setup
 
 - Rust 2024 edition (1.85+) with Cargo, rustfmt and Clippy
-- Node.js 24+ for the dependency-free Node test harness (native TypeScript
-  stripping); Node/npm and esbuild for the browser build
+- Node.js 24+ for the Node standard test harness (native TypeScript stripping)
+- Pinned TypeScript 7.0.2 for source checking; esbuild remains the browser bundler
 - curl for optional Natural Earth geodata
 
 ```bash
@@ -37,21 +37,51 @@ cd client && npm run build
 
 ```bash
 cargo fmt --all -- --check
-cargo test --workspace -j 2
-cargo clippy --workspace --all-targets -j 2 -- -D warnings
-cargo build -p server -j 2
+cargo test --workspace --locked -j 2
+cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
+cargo build -p server --locked -j 2
 cd client
-PELORUS_SERVER_BIN=../target/debug/server npm test
+npm ci --ignore-scripts
+npm run typeprep
+npm run typecheck
+PELORUS_SERVER_BIN=../target/debug/server npm run test:ci
 npm run build
 ```
 
-`npm test` runs the Node standard test runner using existing esbuild/Arrow
-packages; no test package is added. Pure client tests exercise the actual entry
-point with socket/DOM/timer boundaries stubbed and real Arrow IPC encoding and
-decoding. The optional `PELORUS_SERVER_BIN` tests start that server with a small
-workload on port 3000 to check real WebSocket/IPC query framing, and verify
-invalid-setting exits. Without the variable, those two tests are skipped. Tests do not render WebGL or
-measure browser performance. esbuild bundles TypeScript; it is not a typechecker.
+`npm run typecheck` checks every normal `src/**/*.ts` source with strict null and
+implicit-any checking, unused checks, ES2022/DOM ESM, bundler module resolution
+and no emit. Full dependency declaration checking stays enabled. The `.mjs` tests and tooling
+scripts are executed by Node and are not included in the TypeScript source check. The locked
+luma.gl 9.2.6 declarations need three precise type-only corrections; the separate
+explicit `npm run typeprep` command validates both package versions and SHA-256
+hashes before changing those two installed `.d.ts` files. Both targets must be
+original or both already prepared; mixed/unknown states fail without writes. See [typecheck.md](typecheck.md)
+for original diagnostics, exact corrections, rationale and maintenance guidance.
+No runtime dependency file or package resolution is changed by this repair.
+
+`npm test` remains the optional local test command: without `PELORUS_SERVER_BIN`,
+the two real-server tests are skipped. **CI uses `npm run test:ci`**, which rejects
+an unset, missing or non-executable server before starting. It runs all Node test
+files with two workers, preserves nonzero child exits, and verifies TAP totals:
+every registered test must pass with zero failures, skips, cancellations or TODOs.
+Both named integration cases must have explicit passing results. The tests start
+the real Cargo-built server on `127.0.0.1:3000` and clean up owned server processes.
+No test package or framework is added. There is no shell output pipe in this gate.
+
+Pure client tests exercise the entry point with socket/DOM/timer boundaries
+stubbed and real Arrow IPC encoding/decoding. Tests do not render WebGL or measure
+browser/GPU performance. esbuild still bundles; TypeScript performs source checks.
+
+CI installs with `npm ci --ignore-scripts` so dependency lifecycle hooks do not
+run; explicit declaration preparation remains a separate step. TypeScript 7's
+optional platform packages are transitive development tooling, not runtime deps.
+
+The single Linux CI job uses Ubuntu 24.04, Rust 1.99.1 and Node 24.22.1. Official
+checkout/setup-node actions are pinned by commit SHA, permissions are
+`contents: read`, checkout credentials are not persisted, and stale runs cancel.
+The job has a 20-minute timeout; Cargo, Rust test threads, Tokio, native compiler
+workers and Node test-file concurrency are bounded to two. Rust Clippy/tests/build
+use `--locked`. CI does not establish Windows support or browser/GPU capacity.
 
 Rust regressions use explicit timestamps and Tokio virtual time instead of
 sleeping. They cover startup ingestion without clients, shared fanout, lag,
