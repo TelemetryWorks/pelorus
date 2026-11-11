@@ -37,9 +37,17 @@ client/src/map.ts(226,31): error TS6133: 'isDark' is declared but its value is n
 
 Project corrections use the actual public API: `Deck<MapView>`, a div container,
 typed GeoJSON/layer results, a type-only metadata import, removal of unused code,
-and supported luma depth parameters (`depthCompare: "always"`, writes disabled).
-The latter expresses the existing intended depth-test-off setting through the
-current API; browser/GPU behavior is not established by these checks.
+and removal of the unsupported legacy `depthTest: false` configuration block.
+The locked Deck/luma draw path ignores that old key. Removing it leaves the
+existing runtime defaults in effect; this tooling task does not introduce new
+depth comparison or depth-write settings. No browser/GPU claim is made.
+
+The `querySelector<HTMLDivElement>` type argument is unchecked. Its contract is
+tied to the tag-qualified `div#map-container` selector and the fixed
+`<div id="map-container">` in `client/dist/index.html`; it is not presented as
+runtime validation. The `.mjs` tests are executed by Node, not typechecked by this
+`src/**/*.ts` configuration. TypeScript 7's optional `@typescript` platform packages
+are transitive development-tool records, not added product runtime dependencies.
 
 ## Exact upstream declaration corrections
 
@@ -134,8 +142,8 @@ serialization uses Python `json.dumps(..., sort_keys=True)`):
 ```json
 {
   "beforeBundle": {
-    "app.js": "0938cd5aef7e725470543651f097e79903af7535f3b3ca9f2a490eaf37f5d86a",
-    "app.js.map": "f60bb6d6a48e97910109441ceda1cfe6eec7bde95be08b2cb862580d498efb9a"
+    "app.js": "45badd983f0953b7f9175eb2ea6e913cec43788639be3cf2f755be66ae8b45d7",
+    "app.js.map": "21d591df3e78c557ac14a4a23a18884a85c2ebf426736f01668f53ad5657f3e2"
   },
   "preparation": "both original -> approved hashes; both approved -> unchanged bytes and mtimes",
   "drift-core": "rejected without changing either target or either manifest",
@@ -151,10 +159,10 @@ serialization uses Python `json.dumps(..., sort_keys=True)`):
   "unchangedExistingLockPackageRecords": 378,
   "addedDevOnlyRecords": 21,
   "runtimeLockRecordManifestSHA256": "b6181b8bbaf0c3f4b8bc20a718c60f072ff268d8c38b5c07356b564cb1406ce7",
+  "negativeShaderInputsAPI": "ShaderInputs<{demo?:{value:number}}> rejects props.value=\"wrong\" with TS2322",
   "afterBundle": {
-    "app.js": "0938cd5aef7e725470543651f097e79903af7535f3b3ca9f2a490eaf37f5d86a",
-    "app.js.map": "f60bb6d6a48e97910109441ceda1cfe6eec7bde95be08b2cb862580d498efb9a"
-  },
-  "negativeShaderInputsAPI": "ShaderInputs<{demo?:{value:number}}> rejects props.value=\"wrong\" with TS2322"
+    "app.js": "45badd983f0953b7f9175eb2ea6e913cec43788639be3cf2f755be66ae8b45d7",
+    "app.js.map": "21d591df3e78c557ac14a4a23a18884a85c2ebf426736f01668f53ad5657f3e2"
+  }
 }
 ```

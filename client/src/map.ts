@@ -87,10 +87,6 @@ export class MapRenderer {
         bearing: 0,
       },
       controller: true,
-      parameters: {
-        depthCompare: "always",
-        depthWriteEnabled: false,
-      },
     });
 
     this.basemap.load().then(() => {

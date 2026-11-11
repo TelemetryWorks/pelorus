@@ -45,7 +45,7 @@ jobs:
           cargo +"$RUST_TOOLCHAIN" build --workspace --locked
       - name: Install locked client dependencies
         working-directory: client
-        run: npm ci --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Prepare locked dependency declarations (hash-checked, type-only)
         working-directory: client
         run: npm run typeprep

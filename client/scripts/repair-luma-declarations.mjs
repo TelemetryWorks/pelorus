@@ -29,7 +29,9 @@ const targets = repairs.map(repair => {
   if (manifest.version !== '9.2.6') throw new Error(`Unexpected luma.gl version: ${manifest.version}`);
   const original = readFileSync(path, 'utf8');
   const digest = hash(original);
-  const state = digest === repair.before ? 'original' : digest === repair.after ? 'prepared' : null;
+  let state = null;
+  if (digest === repair.before) state = 'original';
+  else if (digest === repair.after) state = 'prepared';
   if (!state) throw new Error(`Unexpected declaration contents: ${path.pathname}`);
   let fixed = original;
   if (state === 'original') {

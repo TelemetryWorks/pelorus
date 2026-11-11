@@ -120,7 +120,7 @@ cargo test --workspace --locked -j 2
 cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
 cargo build -p server --locked -j 2
 cd client
-npm ci
+npm ci --ignore-scripts
 npm run typeprep
 npm run typecheck
 PELORUS_SERVER_BIN=../target/debug/server npm run test:ci

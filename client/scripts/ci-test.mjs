@@ -11,7 +11,7 @@ export const integrationTests = [
 
 export function verifyTestOutput(output) {
   const summary = key => {
-    const matches = [...output.matchAll(new RegExp(`^# ${key} (\\d+)\\r?$`, 'gm'))];
+    const matches = [...output.matchAll(new RegExp(String.raw`^# ${key} (\d+)\r?$`, 'gm'))];
     if (matches.length !== 1) throw new Error(`Missing or ambiguous TAP summary: ${key}`);
     return Number(matches[0][1]);
   };
@@ -21,7 +21,7 @@ export function verifyTestOutput(output) {
     throw new Error('CI requires every test to pass with zero skips, failures, cancellations or TODOs');
   }
   for (const name of integrationTests) {
-    if (!new RegExp(`^ok \\d+ - ${name}\\r?$`, 'm').test(output)) {
+    if (!new RegExp(String.raw`^ok \d+ - ${name}\r?$`, 'm').test(output)) {
       throw new Error(`Required integration test did not pass: ${name}`);
     }
   }

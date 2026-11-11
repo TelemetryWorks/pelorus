@@ -34,7 +34,7 @@ const logEl = document.getElementById("log")!;
 const statsEl = document.getElementById("stats")!;
 const perfEl = document.getElementById("perf")!;
 const themeBtn = document.getElementById("theme-btn")!;
-const mapContainer = document.querySelector<HTMLDivElement>("#map-container")!;
+const mapContainer = document.querySelector<HTMLDivElement>("div#map-container")!;
 const sliderContainer = document.getElementById("time-slider")!;
 
 // --- State ---
