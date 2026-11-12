@@ -1,0 +1,19 @@
+# Line endings: LF in the repository and in every checkout, on every OS.
+* text=auto eol=lf
+
+# Binary files: never convert or diff as text.
+*.ch10 binary
+*.c10 binary
+*.tf10 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.gz binary
+*.zip binary
+*.wasm binary
+*.woff binary
+*.woff2 binary
