@@ -1,5 +1,7 @@
 # Pelorus
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/TelemetryWorks/pelorus/badge)](https://scorecard.dev/viewer/?uri=github.com/TelemetryWorks/pelorus)
+
 GPU-accelerated geospatial object tracker with Arrow IPC streaming and shader-side time filtering.
 
 **Current: Phase 6 prototype** — Bounded in-memory archive and historical queries.
