@@ -16,7 +16,7 @@
     "@deck.gl/extensions": "^9.1.0",
     "@deck.gl/layers": "^9.1.0",
     "apache-arrow": "^18.0.0",
-    "deck.gl": "^9.1.0"
+    "deck.gl": "^9.4.1"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",
