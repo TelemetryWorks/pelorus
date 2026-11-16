@@ -1,168 +1,99 @@
-# Strict frontend typecheck and locked declaration corrections
+# Strict frontend typecheck
 
-`npm run typecheck` uses exactly TypeScript 7.0.2, with strict/noEmit ES2022 ESM,
-bundler resolution, DOM libraries and unused checks over `src/**/*.ts`. It checks
-library declarations too: no `skipLibCheck`, ambient `any` module stubs or ignored
-project diagnostics. esbuild remains the bundler. Tests remain Node standard tests.
+The current lockfile uses Deck 9.4.1, luma.gl 9.4.2 and TypeScript 7.0.2.
+Run the compiler directly against the unmodified installed declarations:
 
-## Baseline evidence
+```bash
+cd client
+npm ci --ignore-scripts
+npm run typecheck
+```
 
-Base `efb59e62dc0a2511dbae5d4bdc273646b7317d7d`, original locked libraries,
-new strict tsconfig, before source fixes: nine diagnostics. Both TypeScript 7.0.2
-and an isolated 5.9.3 compiler reproduce the same nine errors. The comparison
-compiler was installed under `/tmp`, not added to the project dependency graph.
+The project keeps strict/noEmit ES2022 ESM, bundler resolution, DOM libraries,
+unused checks and full dependency declaration checking over `src/**/*.ts`.
+There is no `skipLibCheck`, ambient module shim, ignored project diagnostic or
+local declaration repair. esbuild remains the locked local browser bundler.
+The `.mjs` tests execute separately and are not typechecked by this configuration.
+
+## Retirement of the 9.2.6 repair
+
+Dependabot [PR #18](https://github.com/TelemetryWorks/pelorus/pull/18), exact head
+`43bad5d53543819027d385939fe0615f12b57a7b`, updates the three granular Deck
+packages from 9.2.11 to 9.4.1 and esbuild from 0.28.1 to 0.28.2. The resulting
+luma.gl version is 9.4.2. Its failed CI reports
+`Error: Unexpected luma.gl version: 9.4.2` from the deliberately narrow old guard.
+This is a guard failure, not evidence that 9.4.2 needs its declarations patched.
+
+Before retiring the workaround, the original problem was reproduced on main
+`cc76a39` with a clean original-lock installation and TypeScript 7.0.2. Without
+preparation, all three original vendor diagnostics recur:
 
 ```text
-client/node_modules/@luma.gl/core/dist/adapter/resources/render-pipeline.d.ts(6,68): error TS2307: Cannot find module '@luma.gl/core/shadertypes/textures/texture-formats' or its corresponding type declarations.
-client/node_modules/@luma.gl/engine/dist/shader-inputs.d.ts(20,49): error TS2344: Type 'ShaderPropsT[P]' does not satisfy the constraint 'Record<string, any>'.
-  Type 'ShaderPropsT[keyof ShaderPropsT]' is not assignable to type 'Record<string, any>'.
-    Type 'ShaderPropsT[string] | ShaderPropsT[number] | ShaderPropsT[symbol]' is not assignable to type 'Record<string, any>'.
-      Type 'ShaderPropsT[string]' is not assignable to type 'Record<string, any>'.
-        Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, any>'.
-          Type 'undefined' is not assignable to type 'Record<string, any>'.
-client/node_modules/@luma.gl/engine/dist/shader-inputs.d.ts(32,50): error TS2344: Type 'ShaderPropsT[P]' does not satisfy the constraint 'Record<string, any>'.
-  Type 'ShaderPropsT[keyof ShaderPropsT]' is not assignable to type 'Record<string, any>'.
-    Type 'ShaderPropsT[string] | ShaderPropsT[number] | ShaderPropsT[symbol]' is not assignable to type 'Record<string, any>'.
-      Type 'ShaderPropsT[string]' is not assignable to type 'Record<string, any>'.
-        Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, any>'.
-          Type 'undefined' is not assignable to type 'Record<string, any>'.
-client/src/main.ts(21,3): error TS1484: 'MetaResponse' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
-client/src/main.ts(209,10): error TS6133: 'formatBytes' is declared but its value is never read.
-client/src/map.ts(79,5): error TS2322: Type 'Deck<MapView>' is not assignable to type 'Deck<null>'.
-  Type 'MapView' is not assignable to type 'null'.
-client/src/map.ts(80,7): error TS2741: Property 'align' is missing in type 'HTMLElement' but required in type 'HTMLDivElement'.
-client/src/map.ts(91,9): error TS2353: Object literal may only specify known properties, and 'depthTest' does not exist in type 'Parameters'.
-client/src/map.ts(226,31): error TS6133: 'isDark' is declared but its value is never read.
+node_modules/@luma.gl/core/dist/adapter/resources/render-pipeline.d.ts(6,68): error TS2307: Cannot find module '@luma.gl/core/shadertypes/textures/texture-formats' or its corresponding type declarations.
+node_modules/@luma.gl/engine/dist/shader-inputs.d.ts(20,49): error TS2344: Type 'ShaderPropsT[P]' does not satisfy the constraint 'Record<string, any>'.
+node_modules/@luma.gl/engine/dist/shader-inputs.d.ts(32,50): error TS2344: Type 'ShaderPropsT[P]' does not satisfy the constraint 'Record<string, any>'.
 ```
 
-Project corrections use the actual public API: `Deck<MapView>`, a div container,
-typed GeoJSON/layer results, a type-only metadata import, removal of unused code,
-and removal of the unsupported legacy `depthTest: false` configuration block.
-The locked Deck/luma draw path ignores that old key. Removing it leaves the
-existing runtime defaults in effect; this tooling task does not introduce new
-depth comparison or depth-write settings. No browser/GPU claim is made.
+Running the existing 9.2.6 preparation makes that same strict check pass. Then,
+with PR #18's exact manifest/lockfile and a fresh `npm ci --ignore-scripts`, the
+old guard rejects 9.4.2 as expected, but **direct `npm run typecheck` passes**
+without preparing or changing any installed declarations.
 
-The `querySelector<HTMLDivElement>` type argument is unchecked. Its contract is
-tied to the tag-qualified `div#map-container` selector and the fixed
-`<div id="map-container">` in `client/dist/index.html`; it is not presented as
-runtime validation. The `.mjs` tests are executed by Node, not typechecked by this
-`src/**/*.ts` configuration. TypeScript 7's optional `@typescript` platform packages
-are transitive development-tool records, not added product runtime dependencies.
+The upstream 9.4.2 packages identify source commit
+`94e95a6ab4e5981d4d15e54cca540febd13f2775`:
 
-## Exact upstream declaration corrections
+- [RenderPipeline source](https://github.com/visgl/luma.gl/blob/94e95a6ab4e5981d4d15e54cca540febd13f2775/modules/core/src/adapter/resources/render-pipeline.ts)
+  uses a relative texture-type import. The published declaration imports
+  `../../shadertypes/texture-types/texture-formats.js`, resolving the old TS2307.
+- [ShaderInputs source](https://github.com/visgl/luma.gl/blob/94e95a6ab4e5981d4d15e54cca540febd13f2775/modules/engine/src/shader-inputs.ts)
+  defines `ShaderInputsModule` descriptors and uses them for registered modules
+  and constructor inputs. The two invalid indexed generic applications from
+  9.2.6 are gone; typed `setProps` remains checked.
 
-Both packages are already locked at 9.2.6, published from upstream commit
-`9c7a3adc09c7b23800df3f916762445ebc1fa924`.
+Both installed target declarations were compared byte-for-byte against fresh
+9.4.2 npm tarballs. Their raw SHA-256 values are evidence, not new repair guards:
 
-```diff
-# @luma.gl/core/dist/adapter/resources/render-pipeline.d.ts
-- from '@luma.gl/core/shadertypes/textures/texture-formats'
-+ from '../../shadertypes/textures/texture-formats.js'
+| Published declaration | SHA-256 |
+| --- | --- |
+| core/dist/adapter/resources/render-pipeline.d.ts | `de053ea17c3b41828a9ab8e0bf505a0508c609c0fd384602929ddf21748eb454` |
+| engine/dist/shader-inputs.d.ts | `bb24ada9dbacd741a5560ead3dab13d34a764df5f5a5c9fce8de076a235d49f2` |
 
-# @luma.gl/engine/dist/shader-inputs.d.ts
-- ShaderModule<ShaderPropsT[P]>
-+ ShaderModule<NonNullable<ShaderPropsT[P]>>
-- ShaderModule<ShaderPropsT[P], any>
-+ ShaderModule<NonNullable<ShaderPropsT[P]>, any>
-```
+The obsolete repair script, `typeprep` command, CI preparation step and active
+setup instructions are removed together. The old precise repair, compiler
+comparison, hash guards and identity evidence remain in the
+[historical 9.2.6 record](evals/2026-11-11-luma-926-declaration-repair.md).
+No guard is widened to accept unknown versions or contents.
 
-SHA-256 guards (full installed declaration file bytes):
+## Negative typing controls
 
-| File | Original | Corrected |
-|---|---|---|
-| core/dist/adapter/resources/render-pipeline.d.ts | `20ff7645609753f0817edda2ac7ba64684720e4de006c3a2fc6dcefec210cbd8` | `0b60dcd6b8192687a3b277bec46047c1a196d9c02fe0d3821d9a5b83260115dd` |
-| engine/dist/shader-inputs.d.ts | `93000365d5a29fc4016e289acde3e40043d9dbd8db1ababd06dd6d9452a0bdd5` | `f61b91c574f302abcc266d77636d44777e391d72e8e3236e6202e269bc0fd235` |
+With unmodified 9.4.2 declarations, a temporary frontend source file was checked
+and then removed. All three expected mistakes fail:
 
-The first correction resolves the same exported texture type aliases from their
-existing file. The package exports only its root, so the original bare internal
-subpath is not resolvable under bundler exports rules. This type-only import has
-no emitted runtime import. See the [pinned texture source](https://github.com/visgl/luma.gl/blob/9c7a3adc09c7b23800df3f916762445ebc1fa924/modules/core/src/shadertypes/textures/texture-formats.ts).
+- `ShaderInputs<{demo?: {value: number}}>.setProps` with a string value: TS2322.
+- The unsupported Deck `parameters.depthTest` key: TS2353.
+- A project string assigned to a number: TS2322.
 
-The engine's `ShaderPropsT` is a partial property map. Its indexed value can
-therefore be `undefined`, while the referenced `ShaderModule` generic requires a
-record. `NonNullable` removes only that optional-map `undefined`; it introduces
-no permissive replacement type and leaves the existing second generic argument
-unchanged. The [pinned ShaderInputs source](https://github.com/visgl/luma.gl/blob/9c7a3adc09c7b23800df3f916762445ebc1fa924/modules/engine/src/shader-inputs.ts)
-contains typing suppressions at these exact declarations. Its implementation
-uses module descriptors and substitutes an empty object for absent props before
-calling the uniform handler. Thus the correction matches that record-valued API.
+These controls establish that a clean positive check was not obtained by
+weakening project or dependency typing. They do not establish browser/GPU
+correctness or performance. The source, existing 21 Rust/52 Node tests, test
+harness, local esbuild invocation and HTTPS-only downloads remain unchanged.
 
-An accurate ambient alias could resolve the first type-only import, but it does
-not correct the other two invalid generic applications in the original class.
-Interface augmentation cannot replace an existing property with a different type,
-or remove an invalid original constructor declaration while full declaration
-checking remains enabled. See [TypeScript merging rules](https://www.typescriptlang.org/docs/handbook/declaration-merging.html).
+The full local gate on aarch64 passes with a fresh install and at most two heavy
+workers: direct strict typecheck, Rust fmt/Clippy with warnings denied, all 21
+locked Rust tests, locked build, all 52 Node tests with zero skips and both
+actual-server integrations, and esbuild build. actionlint 1.7.12 and zizmor
+1.32.0's offline regular-persona workflow audit also pass. After these checks,
+both installed declarations still match the unmodified 9.4.2 tarball bytes.
 
-A compiler change to tested 5.9.3 does not resolve these errors; the invalid bare
-subpath is also a package-exports problem. This is evidence for the two tested
-compilers, not a claim about every compiler version. Upgrading/downgrading the
-runtime libraries would change the explicitly frozen runtime graph.
+## Dependency boundaries
 
-## Repair scope and maintenance
+The dependency lockfile is copied exactly from PR #18. The only additional
+manifest change is removal of the obsolete `typeprep` script. The `deck.gl`
+umbrella stays absent; npm audit reports zero vulnerabilities. No additional
+project dependency, override, runtime source patch, release or settings change
+is introduced. Rust dependencies and the separately planned Arrow/tower-http
+major upgrades are outside this change.
 
-The explicit development command `npm run typeprep` runs
-`scripts/repair-luma-declarations.mjs`; `npm run typecheck` only runs the compiler.
-There is no npm lifecycle hook or network access. Both fixed packages must be
-9.2.6 and both fixed target files must have their original hashes, or both must
-have their approved-after hashes. Mixed, unknown or wrong-version states fail
-before any writes. All calculated output hashes are checked before writing, and
-both actual output hashes are verified afterward. Both-after preparation performs
-no writes. It changes no `.js`, runtime source, package manifest or lock record.
-`npm ci` restores original declarations; repeated explicit preparation is idempotent.
-
-Any future runtime dependency update must review these corrections and their
-hashes against upstream. Do not simply update hashes to accept unknown contents,
-or disable checks to make an upgrade pass. No patch/declaration package is added.
-The TypeScript/compiler platform packages are development-only additions; every
-pre-existing lockfile package record must remain byte-for-byte equivalent as JSON.
-
-## Executed compatibility and identity evidence
-
-On Linux aarch64, with TypeScript 7.0.2 / Node 24.22.1:
-
-- Both original files prepare successfully to the exact approved-after hashes.
-- Both prepared files are a no-op, including unchanged modification times.
-- Drift in either file, wrong package version in either package, and each mixed
-  original/prepared state reject with neither target nor manifest changed.
-- An unimported nested frontend source file fails for both an obsolete Deck API
-  (`TS2353`) and a wrong project assignment (`TS2322`). The prepared optional
-  `ShaderInputs` props API still rejects a string for a numeric value (`TS2322`).
-- All 378 existing lockfile package records match base as complete JSON records,
-  including resolutions, dependency edges, versions, integrities and flags. The
-  21 added records are only development TypeScript 7.0.2 plus its platform tools.
-- Across the two affected luma packages, all 554 non-target files match before/after
-  preparation, including all 114 JavaScript files. This is a check of preparation
-  itself, not a claim that project source fixes have no emitted-byte difference.
-- Bundling the same corrected project sources immediately before/after explicit
-  declaration preparation produces identical JS and source-map hashes.
-
-Exact preparation-only identity report (sorted relative-path/hash manifest
-serialization uses Python `json.dumps(..., sort_keys=True)`):
-
-```json
-{
-  "beforeBundle": {
-    "app.js": "45badd983f0953b7f9175eb2ea6e913cec43788639be3cf2f755be66ae8b45d7",
-    "app.js.map": "21d591df3e78c557ac14a4a23a18884a85c2ebf426736f01668f53ad5657f3e2"
-  },
-  "preparation": "both original -> approved hashes; both approved -> unchanged bytes and mtimes",
-  "drift-core": "rejected without changing either target or either manifest",
-  "drift-engine": "rejected without changing either target or either manifest",
-  "wrong-version-core": "rejected without changing either target or either manifest",
-  "wrong-version-engine": "rejected without changing either target or either manifest",
-  "mixed-core-before": "rejected without changing either target or either manifest",
-  "mixed-engine-before": "rejected without changing either target or either manifest",
-  "negativeTypecheck": "unimported nested src file rejected: TS2353 (obsolete Deck API) and TS2322 (string assigned to number)",
-  "vendorFilesUnchangedExceptTwoDeclarations": 554,
-  "vendorJavaScriptFilesUnchanged": 114,
-  "vendorJavaScriptManifestSHA256": "4776da11619a2810dfb7638411ac2d5a3cf406c20b1829b22194383cca1bc14c",
-  "unchangedExistingLockPackageRecords": 378,
-  "addedDevOnlyRecords": 21,
-  "runtimeLockRecordManifestSHA256": "b6181b8bbaf0c3f4b8bc20a718c60f072ff268d8c38b5c07356b564cb1406ce7",
-  "negativeShaderInputsAPI": "ShaderInputs<{demo?:{value:number}}> rejects props.value=\"wrong\" with TS2322",
-  "afterBundle": {
-    "app.js": "45badd983f0953b7f9175eb2ea6e913cec43788639be3cf2f755be66ae8b45d7",
-    "app.js.map": "21d591df3e78c557ac14a4a23a18884a85c2ebf426736f01668f53ad5657f3e2"
-  }
-}
-```
+Future updates must pass the same direct strict check and unchanged real-server
+zero-skip gate. A new declaration defect requires new evidence and review;
+retiring this workaround is not permission to bypass compiler failures.

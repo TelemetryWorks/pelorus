@@ -42,7 +42,6 @@ cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
 cargo build -p server --locked -j 2
 cd client
 npm ci --ignore-scripts
-npm run typeprep
 npm run typecheck
 PELORUS_SERVER_BIN=../target/debug/server npm run test:ci
 npm run build
@@ -51,13 +50,10 @@ npm run build
 `npm run typecheck` checks every normal `src/**/*.ts` source with strict null and
 implicit-any checking, unused checks, ES2022/DOM ESM, bundler module resolution
 and no emit. Full dependency declaration checking stays enabled. The `.mjs` tests and tooling
-scripts are executed by Node and are not included in the TypeScript source check. The locked
-luma.gl 9.2.6 declarations need three precise type-only corrections; the separate
-explicit `npm run typeprep` command validates both package versions and SHA-256
-hashes before changing those two installed `.d.ts` files. Both targets must be
-original or both already prepared; mixed/unknown states fail without writes. See [typecheck.md](typecheck.md)
-for original diagnostics, exact corrections, rationale and maintenance guidance.
-No runtime dependency file or package resolution is changed by this repair.
+scripts are executed by Node and are not included in the TypeScript source check.
+The locked luma.gl 9.4.2 declarations pass directly from a clean install; no
+declaration repair or preparation command remains. See [typecheck.md](typecheck.md)
+for the old-problem reproduction, upstream fixes and strict negative controls.
 
 `npm test` remains the optional local test command: without `PELORUS_SERVER_BIN`,
 the two real-server tests are skipped. **CI uses `npm run test:ci`**, which rejects
@@ -73,7 +69,7 @@ stubbed and real Arrow IPC encoding/decoding. Tests do not render WebGL or measu
 browser/GPU performance. esbuild still bundles; TypeScript performs source checks.
 
 CI installs with `npm ci --ignore-scripts` so dependency lifecycle hooks do not
-run; explicit declaration preparation remains a separate step. TypeScript 7's
+run; strict typing checks the unmodified installed declarations. TypeScript 7's
 optional platform packages are transitive development tooling, not runtime deps.
 
 The single Linux CI job uses Ubuntu 24.04, Rust 1.99.1 and Node 24.22.1. Official
